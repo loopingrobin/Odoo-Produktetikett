@@ -26,15 +26,3 @@ if __name__ == "__main__":
     # printer.send_pdf_to_printnode(pfad)
 
     # print("Etikett wurde gesendet.")
-
-# {
-#     "odoo": {
-#         "url": "https://testdb.odoo.com",
-#         "db": "testdb",
-#         "username": "c.wagner@chw-technik.de",
-#         "password": "DiuPodoo2024"
-#     },
-#     "printnode": {
-#         "api_key": "wq-kp6ceaRRjUlWOklGkzw0u1NvPAAnJoRuaxcpoU3w"
-#     }
-# }
