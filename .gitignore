@@ -1,0 +1,29 @@
+# Python typische Ignorierungen
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtuelle Umgebungen
+venv/
+env/
+
+# IDE / Editor Dateien (optional)
+.vscode/
+.idea/
+
+# Ignoriere alle JSON-Dateien
+*.json
+
+# Ignoriere alle PDF-Dateien
+*.pdf
+
+# Logs, Datenbanken, Caches
+*.log
+*.sqlite3
+*.cache
