@@ -41,3 +41,22 @@ class OdooClient:
             {'fields': ['name', 'list_price', 'barcode']}
         )
 # ----------------------------------------------------------------------------
+    def get_sales(self, limit=20):
+        if not self.isConnected:
+            raise Exception("Nicht verbunden mit Odoo.")
+
+        try:
+            sales = self.models.execute_kw(
+                self.db, self.uid, self.password,
+                'sale.order', 'search_read',
+                [[]],  # keine Filter – alle Bestellungen
+                {
+                    'fields': ['name', 'partner_id', 'date_order', 'amount_total', 'order_line'],
+                    'limit': limit,
+                    'order': 'date_order desc'
+                }
+            )
+            return sales
+        except Exception as e:
+            raise Exception(f"Fehler beim Abrufen der Verkaufsdaten: {str(e)}")
+# ----------------------------------------------------------------------------

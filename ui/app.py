@@ -37,13 +37,13 @@ class EtikettApp(tk.Tk):
             "Einstellungen": lambda parent: SettingsPage(
                 parent, self, self.odoo_client, self.label_printer, self.settings_manager
             ),
-            "Produkt": lambda parent: ProductPage(
+            "Produktseite": lambda parent: ProductPage(
                 parent, self, self.odoo_client, self.label_printer
             )
         }
 
         self.current_page = None
-        self.load_page("Einstellungen")
+        self.load_page("Produktseite")
 # ----------------------------------------------------------------------------
     def create_menu(self):
         menubar = tk.Menu(self)
@@ -85,6 +85,10 @@ class EtikettApp(tk.Tk):
         page_factory = self.pages[page_name]
         self.current_page = page_factory(self.panel)
         self.current_page.pack(fill="both", expand=True)
+
+        # Falls die Seite eine `on_show()`-Methode hat, aufrufen:
+        if hasattr(self.current_page, "on_show"):
+            self.current_page.on_show()
 # ----------------------------------------------------------------------------
     def get_odoo_status(self):
         return "Odoo: Verbunden" if self.odoo_client.isConnected else "Odoo: Nicht verbunden"
