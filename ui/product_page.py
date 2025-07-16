@@ -10,9 +10,11 @@ class ProductPage(ttk.Frame):
         self.odoo_client = odoo_client
         self.label_printer = label_printer
 
+        self.sales_data = None
         self.tree = None
 
         self.build_ui()
+        # self.winfo_toplevel().minsize(1000, 600)
 # ----------------------------------------------------------------------------
     def on_show(self):
         self.load_sales_data()
@@ -23,8 +25,8 @@ class ProductPage(ttk.Frame):
         container.pack(fill="both", expand=True, padx=10, pady=10)
 
         # Zwei Spalten im Container anlegen
-        container.columnconfigure(0, weight=1)  # linke Spalte (Verkaufsliste)
-        container.columnconfigure(1, weight=2)  # rechte Spalte (Suchfeld etc.)
+        container.columnconfigure(0, weight=1, minsize=520)  # linke Spalte (Verkaufsliste)
+        container.columnconfigure(1, weight=1)  # rechte Spalte (Suchfeld etc.)
 
         # Verkaufsübersicht
         left_frame = ttk.Frame(container)
@@ -32,27 +34,45 @@ class ProductPage(ttk.Frame):
 
         self.tree = ttk.Treeview(
             left_frame,
-            columns=("name", "customer", "date", "total"),
+            columns=("invoice", "customer", "date", "total"),
             show="headings"
         )
-        self.tree.pack(fill="both", expand=True)
-        self.tree.heading("name", text="Rechnung")
+
+        # Spaltenüberschriften
+        self.tree.heading("invoice", text="Rechnung")
         self.tree.heading("customer", text="Kunde")
         self.tree.heading("date", text="Datum")
         self.tree.heading("total", text="Gesamt")
+
+        # Spaltenbreite in Pixeln definieren (stretch=True erlaubt Anpassung durch Benutzer)
+        self.tree.column("invoice", width=100, anchor="w", stretch=False)
+        self.tree.column("customer", width=250, anchor="w", stretch=True)
+        self.tree.column("date", width=80, anchor="center", stretch=False)
+        self.tree.column("total", width=80, anchor="e", stretch=False)
+
         self.tree.bind("<<TreeviewSelect>>", self.on_sale_selected)  # Eventbindung
+
+        self.tree.pack(fill="both", expand=True)
 
         # Etikett-Vorschau
         right_frame = ttk.Frame(container)
         right_frame.grid(row=0, column=1, sticky="nsew")
 
-        ttk.Label(right_frame, text="Produktsuche").pack(pady=5, anchor="w")
+        ttk.Label(right_frame, text="Produktübersicht").pack(pady=5, anchor="w")
 
         self.tree_products = ttk.Treeview(right_frame, columns=("product", "qty", "price"), show="headings", height=8)
-        self.tree_products.pack(fill="both", expand=True)
+
+        # Spaltenüberschriften
         self.tree_products.heading("product", text="Produkt")
         self.tree_products.heading("qty", text="Menge")
         self.tree_products.heading("price", text="Einzelpreis")
+
+        # Spaltenbreite
+        self.tree_products.column("product", width=200, anchor="w", stretch=True)
+        self.tree_products.column("qty", width=50, anchor="e", stretch=False)
+        self.tree_products.column("price", width=80, anchor="e", stretch=False)
+
+        self.tree_products.pack(fill="both", expand=True)
 
         self.entry_code = ttk.Entry(right_frame)
         self.entry_code.pack(fill="x", pady=5)
@@ -90,24 +110,11 @@ class ProductPage(ttk.Frame):
 # ----------------------------------------------------------------------------
     def load_sales_data(self):
         try:
-            sales = self.odoo_client.get_sales(limit=20)
+            self.sales_data = self.odoo_client.get_sales(limit=20)
             self.tree.delete(*self.tree.get_children())  # vorherige Zeilen löschen
 
-            for sale in sales:
-                name = sale.get("name", "Unbekannt")
-
-                # Sicherer Zugriff auf partner_id
-                partner = sale.get("partner_id", [])
-                customer = partner[1] if isinstance(partner, list) and len(partner) > 1 else "Unbekannter Kunde"
-
-                # Datum kürzen, wenn vorhanden
-                date_full = sale.get("date_order", "")
-                date = date_full[:10] if isinstance(date_full, str) and len(date_full) >= 10 else "?"
-
-                total = sale.get("amount_total", 0)
-                total_str = f"{total:.2f} €"
-
-                self.tree.insert("", "end", values=(name, customer, date, total_str))
+            for i, sale in enumerate(self.sales_data):
+                self.tree.insert("", "end", iid=i, values=(sale.name, sale.customer, sale.date, f"{sale.total:.2f} €"))
 
         except Exception as e:
             messagebox.showerror("Fehler", f"Verkaufsdaten konnten nicht geladen werden:\n{str(e)}")
@@ -117,42 +124,14 @@ class ProductPage(ttk.Frame):
         if not selected:
             return
 
-        item = self.tree.item(selected[0])
-        sale_name = item["values"][0]
+        index = int(selected[0])
+        sale = self.sales_data[index]
 
         try:
-            # Suche die Bestellung nach name
-            sale = self.odoo_client.models.execute_kw(
-                self.odoo_client.db,
-                self.odoo_client.uid,
-                self.odoo_client.password,
-                "sale.order",
-                "search_read",
-                [[["name", "=", sale_name]]],
-                {"fields": ["order_line"]}
-            )[0]
-
-            order_line_ids = sale.get("order_line", [])
-
-            # Hole Produktdaten
-            lines = self.odoo_client.models.execute_kw(
-                self.odoo_client.db,
-                self.odoo_client.uid,
-                self.odoo_client.password,
-                "sale.order.line",
-                "read",
-                [order_line_ids],
-                {"fields": ["product_id", "product_uom_qty", "price_unit"]}
-            )
-
             # Produkte anzeigen
             self.tree_products.delete(*self.tree_products.get_children())
-            for line in lines:
-                product = line.get("product_id")
-                product_name = product[1] if isinstance(product, list) else "Unbekannt"
-                qty = line.get("product_uom_qty", 0)
-                price = line.get("price_unit", 0.0)
-                self.tree_products.insert("", "end", values=(product_name, qty, f"{price:.2f}"))
+            for line in sale.lines:
+                self.tree_products.insert("", "end", values=(line.product_name, line.quantity, f"{line.price:.2f} €"))
 
         except Exception as e:
             messagebox.showerror("Fehler", f"Produkte konnten nicht geladen werden:\n{str(e)}")
