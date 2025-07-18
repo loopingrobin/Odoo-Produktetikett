@@ -1,6 +1,59 @@
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
+import qrcode
+from PIL import Image, ImageTk
+import threading
+
+class LoadingPopup(tk.Toplevel):
+    def __init__(self, parent, message="Lade Daten...", on_cancel=None):
+        super().__init__(parent)
+        self.title("Bitte warten")
+        self.resizable(False, False)
+        self.transient(parent)  # Immer im Vordergrund
+        self.grab_set()  # Blockiere Interaktionen mit Hauptfenster
+        self.protocol("WM_DELETE_WINDOW", self.cancel)  # Verhindert manuelles Schließen
+
+        self.on_cancel = on_cancel
+        self.cancelled = False
+
+        # Nachricht
+        ttk.Label(self, text=message).pack(pady=(10, 5))
+
+        # Ladebalken
+        self.progress = ttk.Progressbar(self, mode="indeterminate")
+        self.progress.pack(fill="x", padx=20, pady=5)
+        self.progress.start(10)
+
+        # Abbrechen-Button
+        ttk.Button(self, text="Abbrechen", command=self.cancel).pack(pady=(0, 10))
+
+
+        # Fenstergröße ermitteln und zentrieren
+        self.update_idletasks()
+        width = 300
+        height = 100
+        self.geometry(f"{width}x{height}")
+
+        # Zentrierung mit Verzögerung
+        self.after(10, self.center_popup)
+
+    def center_popup(self):
+        width = self.winfo_width()
+        height = self.winfo_height()
+
+        parent = self.master  # oder self.master
+
+        x = parent.winfo_rootx() + (parent.winfo_width() // 2) - (width // 2)
+        y = parent.winfo_rooty() + (parent.winfo_height() // 2) - (height // 2)
+        self.geometry(f"+{x}+{y}")
+# ----------------------------------------------------------------------------
+    def cancel(self):
+        self.cancelled = True
+        if self.on_cancel:
+            self.on_cancel()
+        self.destroy()
+# ----------------------------------------------------------------------------
 
 class ProductPage(ttk.Frame):
     def __init__(self, parent, app, odoo_client, label_printer):
@@ -73,30 +126,17 @@ class ProductPage(ttk.Frame):
         self.tree_products.column("price", width=80, anchor="e", stretch=False)
 
         self.tree_products.pack(fill="both", expand=True)
+        self.tree_products.bind("<<TreeviewSelect>>", self.on_product_selected)
 
-        self.entry_code = ttk.Entry(right_frame)
-        self.entry_code.pack(fill="x", pady=5)
-
-        ttk.Button(right_frame, text="Etikett anzeigen", command=self.preview_label).pack(fill="x", pady=5)
-        ttk.Button(right_frame, text="Etikett drucken", command=self.print_label).pack(fill="x", pady=5)
 
         ttk.Label(right_frame, text="Etikett-Vorschau").pack(pady=(15, 5), anchor="w")
         self.label_preview = tk.Text(right_frame, height=10, wrap="word")
         self.label_preview.pack(fill="both", expand=True)
-# ----------------------------------------------------------------------------
-    def preview_label(self):
-        code = self.entry_code.get()
-
-        # Produkt abrufen
-        products = self.odoo_client.search_read_products_by_code(code)
-        if not products:
-            print("Kein Produkt gefunden.")
-            exit()
-
-        product = products[0]
         
-        self.label_preview.delete("1.0", tk.END)
-        self.label_preview.insert(tk.END, f"Produkt: {product['name']}")
+        self.qr_label = ttk.Label(right_frame)
+        self.qr_label.pack(pady=5)
+
+        ttk.Button(right_frame, text="Etikett drucken", command=self.print_label).pack(fill="x", pady=5)
 # ----------------------------------------------------------------------------
     def print_label(self):
         # Etikett drucken
@@ -107,17 +147,6 @@ class ProductPage(ttk.Frame):
         self.label_printer.send_pdf_to_printnode(pfad)
 
         print("Etikett wurde gesendet.")
-# ----------------------------------------------------------------------------
-    def load_sales_data(self):
-        try:
-            self.sales_data = self.odoo_client.get_sales(limit=20)
-            self.tree.delete(*self.tree.get_children())  # vorherige Zeilen löschen
-
-            for i, sale in enumerate(self.sales_data):
-                self.tree.insert("", "end", iid=i, values=(sale.name, sale.customer, sale.date, f"{sale.total:.2f} €"))
-
-        except Exception as e:
-            messagebox.showerror("Fehler", f"Verkaufsdaten konnten nicht geladen werden:\n{str(e)}")
 # ----------------------------------------------------------------------------
     def on_sale_selected(self, event):
         selected = self.tree.selection()
@@ -136,45 +165,80 @@ class ProductPage(ttk.Frame):
         except Exception as e:
             messagebox.showerror("Fehler", f"Produkte konnten nicht geladen werden:\n{str(e)}")
 # ----------------------------------------------------------------------------
-    def load_sales_data_with_invoices(self):
+    def on_product_selected(self, event):
+        selected_sale_index = self.tree.selection()
+        if not selected_sale_index:
+            return
+
+        selected_product_index = self.tree_products.selection()
+        if not selected_product_index:
+            return
+
+        sale_index = int(selected_sale_index[0])
+        product_iid = selected_product_index[0]
+        children = self.tree_products.get_children()
+        product_index = children.index(product_iid)
+
         try:
-            sales = self.odoo_client.models.execute_kw(
-                self.odoo_client.db,
-                self.odoo_client.uid,
-                self.odoo_client.password,
-                'sale.order',
-                'search_read',
-                [[['invoice_ids', '!=', False]]],
-                {'fields': ['id', 'partner_id', 'date_order', 'amount_total', 'invoice_ids'], 'limit': 20}
+            sale = self.sales_data[sale_index]
+            line = sale.lines[product_index]
+
+            # Text vorbereiten.
+            preview = (
+                f"Produkt: {line.product_name}\n"
+                f"Referenz: {line.default_code}\n"
+                f"Menge: {line.quantity}\n"
+                f"Einzelpreis: {line.price:.2f} €\n\n"
+                f"UDI: {line.udi}\n"
+                f"CE-Kennzeichnung: {'Ja' if line.ce else 'Nein'}\n"
+                f"Gebrauchsanweisung: {'Ja' if line.user_manual else 'Nein'}\n"
+                f"Medizinprodukt: {'Ja' if line.medical_device else 'Nein'}\n"
+                f"Einmalverwendung: {'Ja' if line.single_use else 'Nein'}"
             )
 
-            self.tree.delete(*self.tree.get_children())
+            # Text anzeigen.
+            self.label_preview.delete("1.0", tk.END)
+            self.label_preview.insert("1.0", preview)
 
-            for sale in sales:
-                partner = sale.get("partner_id", ["", "Unbekannt"])[1]
-                date_order = sale.get("date_order", "")[:10]
-                amount = sale.get("amount_total", 0.0)
-                invoice_ids = sale.get("invoice_ids", [])
+            # QR-Code vorbereiten.
+            qr = qrcode.QRCode(box_size=4, border=2)
+            qr.add_data(line.udi)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white")
+            img = img.resize((150, 150), Image.Resampling.LANCZOS)
 
-                invoice_name = "—"
-                if invoice_ids:
-                    invoices = self.odoo_client.models.execute_kw(
-                        self.odoo_client.db,
-                        self.odoo_client.uid,
-                        self.odoo_client.password,
-                        'account.move',
-                        'read',
-                        [invoice_ids],
-                        {'fields': ['name', 'state']}
-                    )
-                    posted_invoices = [inv for inv in invoices if inv['state'] == 'posted']
-                    if posted_invoices:
-                        invoice_name = posted_invoices[0]['name']
-                    elif invoices:
-                        invoice_name = invoices[0]['name']
-
-                self.tree.insert("", "end", values=(invoice_name, partner, date_order, amount))
+            # QR-Code anzeigen.
+            self.qr_image = ImageTk.PhotoImage(img)
+            self.qr_label.configure(image=self.qr_image)
 
         except Exception as e:
-            messagebox.showerror("Fehler", f"Verkaufsdaten konnten nicht geladen werden:\n{e}")
+            messagebox.showerror("Fehler", f"Produktdetails konnten nicht angezeigt werden:\n{str(e)}")
+# ----------------------------------------------------------------------------
+    def load_sales_data(self):
+        loading_popup = LoadingPopup(self, "Verkäufe werden geladen...", on_cancel=lambda: loading_popup.cancel)
+
+        def load():
+            try:
+                self.sales_data = self.odoo_client.get_sales(limit=20)
+
+                # GUI-Aktualisierung im Hauptthread
+                self.tree.after(0, lambda: self.update_treeview())
+                if not loading_popup.cancelled:
+                    print("Laden abgeschlossen.")
+
+            except Exception as e:
+                self.tree.after(0, lambda: messagebox.showerror("Fehler", f"Verkaufsdaten konnten nicht geladen werden:\n{str(e)}"))
+
+                
+            finally:
+                if not loading_popup.cancelled:
+                    loading_popup.destroy()
+
+        threading.Thread(target=load, daemon=True).start()
+# ----------------------------------------------------------------------------
+    def update_treeview(self):
+        self.tree.delete(*self.tree.get_children())  # vorherige Zeilen löschen
+
+        for i, sale in enumerate(self.sales_data):
+            self.tree.insert("", "end", iid=i, values=(sale.invoices[0].name, sale.customer, sale.date, f"{sale.total:.2f} €"))
 # ----------------------------------------------------------------------------

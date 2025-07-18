@@ -2,12 +2,31 @@
 import xmlrpc.client
 from dataclasses import dataclass
 from typing import List
+from typing import Optional
 
 @dataclass
 class SaleOrderLine:
+    product_id: int
     product_name: str
     quantity: float
     price: float
+    default_code: str
+
+    # Benutzerdefinierte Felder
+    ce: bool = False  # aus x_studio_ce
+    user_manual: bool = False  # aus x_studio_gebrauchsanweisung
+    udi: Optional[str] = None  # aus x_studio_udi
+    medical_device: bool = False  # aus x_studio_medizinprodukt
+    single_use: bool = False  # aus x_studio_single_use
+
+
+@dataclass
+class Invoice:
+    id: int
+    name: str
+    date: Optional[str]
+    total: float
+    state: str
 
 @dataclass
 class SaleOrder:
@@ -17,6 +36,7 @@ class SaleOrder:
     date: str
     total: float
     lines: List[SaleOrderLine]
+    invoices: list 
 
 class OdooClient:
     def __init__(self, url="", db="", username="", password=""):
@@ -68,9 +88,9 @@ class OdooClient:
             sales_raw = self.models.execute_kw(
                 self.db, self.uid, self.password,
                 'sale.order', 'search_read',
-                [[]],  # keine Filter – alle Bestellungen
+                [[['invoice_ids', '!=', False]]],
                 {
-                    'fields': ['name', 'partner_id', 'date_order', 'amount_total', 'order_line'],
+                    'fields': ['name', 'partner_id', 'date_order', 'amount_total', 'order_line', 'invoice_ids'],
                     'limit': limit,
                     'order': 'date_order desc'
                 }
@@ -84,7 +104,8 @@ class OdooClient:
                     customer= sale.get("partner_id", ["", "Unbekannt"])[1],
                     date= sale.get("date_order", "")[:10],
                     total= sale.get("amount_total", 0.0),
-                    lines= self.get_order_lines(sale.get("order_line",[]))
+                    lines= self.get_order_lines(sale.get("order_line",[])),
+                    invoices=self.get_invoices_by_ids(sale.get("invoice_ids", []))
                 ) for sale in sales_raw
             ]
 
@@ -94,9 +115,12 @@ class OdooClient:
         except Exception as e:
             raise Exception(f"Fehler beim Abrufen der Verkaufsdaten: {str(e)}")
 # ----------------------------------------------------------------------------
-    def get_order_lines(self, order_line_ids):
+    def get_order_lines(self, order_line_ids: list[int]):
+        if not order_line_ids:
+            return []
+
         try:
-            # Rechnungsdaten werden aus Odoo gelesen.
+            # Bestellungsdaten werden aus Odoo gelesen.
             lines_raw = self.models.execute_kw(
                 self.db, self.uid, self.password,
                 "sale.order.line", "read",
@@ -104,27 +128,68 @@ class OdooClient:
                 {"fields": ["product_id", "product_uom_qty", "price_unit"]}
             )
 
-            # Rechnungsdaten werden aufbereitet und in Liste gespeichert.
-            lines = []
-            for line in lines_raw:
-                # Produktname wird überprüft.
-                product_raw = line.get("product_id")
-                if isinstance(product_raw, list) and len(product_raw) > 1:
-                    product_name = product_raw[1]
-                else:
-                    product_name = "Unbekannt"
+            # Zusätzliche Produktdetails holen
+            product_ids = [line["product_id"][0] for line in lines_raw if isinstance(line.get("product_id"), list)]
+            products_raw = self.models.execute_kw(
+                self.db, self.uid, self.password,
+                "product.product", "read",
+                [product_ids],
+                {
+                    "fields": [
+                        "id", "name", 
+                        "default_code",
+                        "x_studio_ce",
+                        "x_studio_gebrauchsanweisung",
+                        "x_studio_udi",
+                        "x_studio_medizinprodukt",
+                        "x_studio_singel_use"
+                    ]
+                }
+            )
+            product_map = {p["id"]: p for p in products_raw}
 
-                lines.append(
-                    SaleOrderLine(
-                        product_name=product_name,
-                        quantity=line.get("product_uom_qty", 0),
-                        price=line.get("price_unit", 0.0)
-                    ) 
-                )
-
-            # Liste mit Rechnungsdaten wird zurückgegeben.
-            return lines
+            # Zusammenbau und Rückgabe der Bestellungsdaten.
+            return [
+                SaleOrderLine(
+                    product_id=line["product_id"][0],
+                    product_name=product_map.get(line["product_id"][0], {}).get("name", "Unbekannt"),
+                    quantity=line.get("product_uom_qty", 0),
+                    price=line.get("price_unit", 0.0),
+                    default_code=product_map.get(line["product_id"][0], {}).get("default_code"),
+                    ce=product_map.get(line["product_id"][0], {}).get("x_studio_ce", False),
+                    user_manual=product_map.get(line["product_id"][0], {}).get("x_studio_gebrauchsanweisung", False),
+                    udi=product_map.get(line["product_id"][0], {}).get("x_studio_udi"),
+                    medical_device=product_map.get(line["product_id"][0], {}).get("x_studio_medizinprodukt", False),
+                    single_use=product_map.get(line["product_id"][0], {}).get("x_studio_singel_use", False)
+                ) for line in lines_raw if isinstance(line.get("product_id"), list)
+            ]
         
+        except Exception as e:
+            raise Exception(f"Fehler beim Abrufen der Rechnungsdaten: {str(e)}")
+# ----------------------------------------------------------------------------
+    def get_invoices_by_ids(self, invoice_ids: list[int]):
+        if not invoice_ids:
+            return []
+
+        try:
+            invoice_data = self.models.execute_kw(
+                self.db, self.uid, self.password,
+                "account.move", "read",
+                [invoice_ids],
+                {"fields": ["id", "name", "invoice_date", "amount_total", "state"]}
+            )
+
+            return [
+                Invoice(
+                    id=inv["id"],
+                    name=inv.get("name", "Unbekannt"),
+                    date=inv.get("invoice_date"),
+                    total=inv.get("amount_total", 0.0),
+                    state=inv.get("state", "unknown")
+                )
+                for inv in invoice_data
+            ]
+
         except Exception as e:
             raise Exception(f"Fehler beim Abrufen der Rechnungsdaten: {str(e)}")
 # ----------------------------------------------------------------------------
