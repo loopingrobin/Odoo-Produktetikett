@@ -65,6 +65,8 @@ class ProductPage(ttk.Frame):
 
         self.sales_data = None
         self.tree = None
+        self.product = None
+        self.mode_var = tk.StringVar(value="Produktetikett") # Default
 
         self.build_ui()
         # self.winfo_toplevel().minsize(1000, 600)
@@ -81,16 +83,29 @@ class ProductPage(ttk.Frame):
         container.columnconfigure(0, weight=1, minsize=520)  # linke Spalte (Verkaufsliste)
         container.columnconfigure(1, weight=1)  # rechte Spalte (Suchfeld etc.)
 
-        # Verkaufsübersicht
+        # Linke Spalte
         left_frame = ttk.Frame(container)
         left_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
 
+        # Dropdown für Auswahl
+        ttk.Label(self, text="Etikett-Typ:").pack(anchor="w", pady=(5, 2))
+        self.mode_select = ttk.Combobox(
+            self,
+            textvariable=self.mode_var,
+            values=["Produktetikett", "Auftragsetikett"],
+            state="readonly"
+        )
+        self.mode_select.pack(anchor="w", pady=(0, 10))
+        self.mode_select.bind("<<ComboboxSelected>>", self.on_mode_change)
+
+        # Gesamtsübersicht
         self.tree = ttk.Treeview(
             left_frame,
             columns=("invoice", "customer", "date", "total"),
             show="headings"
         )
 
+        #TODO: Treeview 'Gesamtsübersicht' laden in eigene Methode.
         # Spaltenüberschriften
         self.tree.heading("invoice", text="Rechnung")
         self.tree.heading("customer", text="Kunde")
@@ -107,14 +122,16 @@ class ProductPage(ttk.Frame):
 
         self.tree.pack(fill="both", expand=True)
 
-        # Etikett-Vorschau
+        # Rechte Spalte
         right_frame = ttk.Frame(container)
         right_frame.grid(row=0, column=1, sticky="nsew")
 
+        # Einzelteilübersicht
         ttk.Label(right_frame, text="Produktübersicht").pack(pady=5, anchor="w")
 
         self.tree_products = ttk.Treeview(right_frame, columns=("product", "qty", "price"), show="headings", height=8)
 
+        #TODO: Treeview 'Einzelteilübersicht' laden in eigene Methode.
         # Spaltenüberschriften
         self.tree_products.heading("product", text="Produkt")
         self.tree_products.heading("qty", text="Menge")
@@ -128,7 +145,7 @@ class ProductPage(ttk.Frame):
         self.tree_products.pack(fill="both", expand=True)
         self.tree_products.bind("<<TreeviewSelect>>", self.on_product_selected)
 
-
+        # Etikett-Vorschau
         ttk.Label(right_frame, text="Etikett-Vorschau").pack(pady=(15, 5), anchor="w")
         self.label_preview = tk.Text(right_frame, height=10, wrap="word")
         self.label_preview.pack(fill="both", expand=True)
@@ -138,7 +155,20 @@ class ProductPage(ttk.Frame):
 
         ttk.Button(right_frame, text="Etikett drucken", command=self.print_label).pack(fill="x", pady=5)
 # ----------------------------------------------------------------------------
+    def on_mode_change(self, event=None):
+        """
+        Wird aufgerufen, wenn im Dropdown gewechselt wird.
+        """
+        mode = self.mode_var.get()
+        if mode == "Produktetikett":
+            self.load_manufacturing_data()
+        elif mode == "Auftragsetikett":
+            self.load_sales_data()
+# ----------------------------------------------------------------------------
     def print_label(self):
+        """
+        Erstellt das Label und sendet es an den Drucker.
+        """
         # Etikett drucken
         # zpl = printer.generate_zpl(product)
         # printer.print_label(zpl)
@@ -182,6 +212,7 @@ class ProductPage(ttk.Frame):
         try:
             sale = self.sales_data[sale_index]
             line = sale.lines[product_index]
+            self.product = line
 
             # Text vorbereiten.
             preview = (

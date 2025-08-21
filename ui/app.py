@@ -11,7 +11,7 @@ class EtikettApp(tk.Tk):
         super().__init__()
 
         self.title("Etikettendrucker")
-        self.geometry("1000x600")
+        self.geometry("1000x700")
 
         self.app_version = app_version
         self.odoo_client = OdooClient()
@@ -22,6 +22,10 @@ class EtikettApp(tk.Tk):
         odoo_settings = self.settings_manager.get_odoo_settings()
         if all(odoo_settings.values()):
             self.odoo_client = OdooClient(**odoo_settings)
+            
+        printNode_settings = self.settings_manager.get_printnode_settings()
+        if all(printNode_settings.values()):
+            self.label_printer = LabelPrinter(**printNode_settings)
 
         # Menü
         self.create_menu()

@@ -7,18 +7,21 @@ from reportlab.pdfgen import canvas
 class LabelPrinter:
     def __init__(self, api_key="", printer_id=""):
         self.api_key = api_key
-        self.printer_id = printer_id
+        self.printer_id = printer_id if printer_id != "" else "74652188"
         self.isConnected = False
 
         if self.api_key != "":
-            if self.connect(self.api_key):
+            success, message = self.connect()
+            if success:
                 self.isConnected = True
+            else:
+                print("❌ Drucker-Verbindung fehlgeschlagen:", message)
 # ----------------------------------------------------------------------------
-    def connect(api_key):
+    def connect(self):
         try:
             response = requests.get(
                 "https://api.printnode.com/printers",
-                auth=(api_key, '')
+                auth=(self.api_key, '')
             )
             if response.status_code == 200:
                 return True, "Verbindung erfolgreich"
@@ -75,8 +78,8 @@ class LabelPrinter:
         c = canvas.Canvas(file_path, pagesize=(100 * mm, 50 * mm))  # 100x50 mm
 
         c.setFont("Helvetica", 12)
-        c.drawString(10 * mm, 40 * mm, f"Name: {product['name']}")
-        c.drawString(10 * mm, 30 * mm, f"Price: ${product['list_price']}")
+        c.drawString(10 * mm, 40 * mm, f"Name: {product.product_name}")
+        c.drawString(10 * mm, 30 * mm, f"Price: ${product.price}")
 
         # Optional: Barcode zeichnen (mit weiteren libs)
 
