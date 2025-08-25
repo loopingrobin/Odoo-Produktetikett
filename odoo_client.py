@@ -1,26 +1,38 @@
 # odoo_client.py
 import xmlrpc.client
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
 from typing import Optional
+    
+@dataclass
+class ProductItem:
+    """
+    Basisdaten für ein Produkt, unabhängig davon,
+    ob es aus einem Verkauf oder einer Fertigung kommt.
+    """
+    id: int
+    name: str
+    default_code: Optional[str] = None
+    quantity: float = 0.0
+    price: float = 0.0
+    ce: bool = False
+    user_manual: bool = False
+    udi: Optional[str] = None
+    medical_device: bool = False
+    single_use: bool = False
 
 @dataclass
-class SaleOrderLine:
-    product_id: int
-    product_name: str
-    quantity: float
-    price: float
-    default_code: str
-
-    # Benutzerdefinierte Felder
-    ce: bool = False  # aus x_studio_ce
-    user_manual: bool = False  # aus x_studio_gebrauchsanweisung
-    udi: Optional[str] = None  # aus x_studio_udi
-    medical_device: bool = False  # aus x_studio_medizinprodukt
-    single_use: bool = False  # aus x_studio_single_use
+class SaleOrderLine(ProductItem):
+    """
+    Erweiterung für Verkaufszeilen (Sale Order Line).
+    """
+    order_id: Optional[int] = None
 
 @dataclass
 class Invoice:
+    """
+    Basisdaten für eine Rechnung.
+    """
     id: int
     name: str
     date: Optional[str]
@@ -29,25 +41,65 @@ class Invoice:
 
 @dataclass
 class SaleOrder:
+    """
+    Basisdaten für einen Verkauf.
+    """
     id: int
     name: str
     customer: str
     date: str
     total: float
-    lines: List[SaleOrderLine]
-    invoices: list 
+    lines: list[SaleOrderLine]
+    invoices: list[Invoice]
 
 @dataclass
-class ManufacturingOrder:
+class Component(ProductItem):
+    """
+    Erweiterung für Fertigungskomponenten (Stock Move).
+    """
+    move_id: Optional[int] = None
+
+@dataclass
+class ManufacturingOrder(ProductItem):
+    """
+    Basisdaten für eine Fertigungskomponente.
+    """
+    product_id: int = 0
+    manufacturing_name: str = ""
+    date_start: str = ""
+    components: List[Component] = field(default_factory=list)
+
+@dataclass
+class PurchaseOrderLine(ProductItem):
+    """
+    Erweiterung für die Einkaufszeilen (Purchase Order Line).
+    """
+    quantity: float = 0.0
+    price: float = 0.0
+    order_id: int | None = None
+
+@dataclass
+class PurchaseOrder:
+    """
+    Basisdaten für einen Einkauf.
+    """
     id: int
     name: str
-    product_name: str
-    quantity: float
-    date_planned: str
-    components: list
+    partner_name: str
+    date_order: str
+    lines: list[PurchaseOrderLine]
+    invoices: list[Invoice]
 
 class OdooClient:
+# ----------------------------------------------------------------------------
+# region Konstruktor
+# ----------------------------------------------------------------------------
     def __init__(self, url="", db="", username="", password=""):
+        """
+        Konstruktor mit Anmeldedaten.
+        Parameter:
+            url
+        """
         self.url = url
         self.db = db
         self.username = username
@@ -61,7 +113,14 @@ class OdooClient:
             if self.login() and self.connect():
                 self.isConnected = True
 # ----------------------------------------------------------------------------
+# endregion
+# ----------------------------------------------------------------------------
+# region Initialisierung
+# ----------------------------------------------------------------------------
     def login(self):
+        """
+        Meldet den Odoo-Client mit den Anmeldedaten an.
+        """
         self.common = xmlrpc.client.ServerProxy(f"{self.url}/xmlrpc/2/common")
         self.uid = self.common.authenticate(self.db, self.username, self.password, {})
         if not self.uid:
@@ -70,6 +129,8 @@ class OdooClient:
         return True
 # ----------------------------------------------------------------------------
     def connect(self):
+        """
+        """
         common = xmlrpc.client.ServerProxy(f"{self.url}/xmlrpc/2/common")
         self.uid = common.authenticate(self.db, self.username, self.password, {})
         if not self.uid:
@@ -78,7 +139,14 @@ class OdooClient:
         self.models = xmlrpc.client.ServerProxy(f"{self.url}/xmlrpc/2/object")
         return True
 # ----------------------------------------------------------------------------
+# endregion
+# ----------------------------------------------------------------------------
+# region Produkte
+# ----------------------------------------------------------------------------
     def search_read_products_by_code(self, code):
+        """
+        Holt Produkte (product.template) und filtert nach Kennzeichen.
+        """
         return self.models.execute_kw(
             self.db, self.uid, self.password,
             'product.template', 'search_read',
@@ -86,7 +154,78 @@ class OdooClient:
             {'fields': ['name', 'list_price', 'barcode']}
         )
 # ----------------------------------------------------------------------------
-    def get_sales(self, limit=20):
+    def get_product_details(self, product_ids: list[int]) -> dict[int, ProductItem]:
+        """
+        Lädt Produktdetails aus Odoo und gibt eine Map von Produkt-ID → ProductItem zurück.
+        """
+        if not product_ids:
+            return {}
+
+        try:
+            products_raw = self.models.execute_kw(
+                self.db, self.uid, self.password,
+                "product.product", "read",
+                [product_ids],
+                {
+                    "fields": [
+                        "id", "name", 
+                        "default_code",
+                        "x_studio_ce",
+                        "x_studio_gebrauchsanweisung",
+                        "x_studio_udi",
+                        "x_studio_medizinprodukt",
+                        "x_studio_singel_use"
+                    ]
+                }
+            )
+            return {
+                p["id"]: ProductItem(
+                    id=p["id"],
+                    name=p.get("name", "Unbekannt"),
+                    default_code=p.get("default_code"),
+                    ce=p.get("x_studio_ce", False),
+                    user_manual=p.get("x_studio_gebrauchsanweisung", False),
+                    udi=p.get("x_studio_udi"),
+                    medical_device=p.get("x_studio_medizinprodukt", False),
+                    single_use=p.get("x_studio_singel_use", False),
+                )
+                for p in products_raw
+            }
+
+        except Exception as e:
+            raise Exception(f"Fehler beim Abrufen der Produktdetails: {str(e)}")
+# ----------------------------------------------------------------------------
+    def get_invoices_by_id_list(self, invoice_ids: list[int]) -> list[Invoice]:
+        if not invoice_ids:
+            return []
+
+        try:
+            invoice_data = self.models.execute_kw(
+                self.db, self.uid, self.password,
+                "account.move", "read",
+                [invoice_ids],
+                {"fields": ["id", "name", "invoice_date", "amount_total", "state"]}
+            )
+
+            return [
+                Invoice(
+                    id=inv["id"],
+                    name=inv.get("name", "Unbekannt"),
+                    date=inv.get("invoice_date"),
+                    total=inv.get("amount_total", 0.0),
+                    state=inv.get("state", "unknown")
+                )
+                for inv in invoice_data
+            ]
+
+        except Exception as e:
+            raise Exception(f"Fehler beim Abrufen der Rechnungsdaten: {str(e)}")
+# ----------------------------------------------------------------------------
+# endregion
+# ----------------------------------------------------------------------------
+# region Verkäufe
+# ----------------------------------------------------------------------------
+    def get_sales(self, limit: int = 20) -> list[SaleOrder]:
         # Odoo-Verbindung wird geprüft.
         if not self.isConnected:
             raise Exception("Nicht verbunden mit Odoo.")
@@ -113,7 +252,7 @@ class OdooClient:
                     date= sale.get("date_order", "")[:10],
                     total= sale.get("amount_total", 0.0),
                     lines= self.get_order_lines(sale.get("order_line",[])),
-                    invoices=self.get_invoices_by_ids(sale.get("invoice_ids", []))
+                    invoices=self.get_invoices_by_id_list(sale.get("invoice_ids", []))
                 ) for sale in sales_raw
             ]
 
@@ -123,7 +262,10 @@ class OdooClient:
         except Exception as e:
             raise Exception(f"Fehler beim Abrufen der Verkaufsdaten: {str(e)}")
 # ----------------------------------------------------------------------------
-    def get_order_lines(self, order_line_ids: list[int]):
+    def get_order_lines(self, order_line_ids: list[int]) -> list[SaleOrderLine]:
+        """
+        Lädt Verkaufszeilen inkl. Produktdetails.
+        """
         if not order_line_ids:
             return []
 
@@ -136,161 +278,238 @@ class OdooClient:
                 {"fields": ["product_id", "product_uom_qty", "price_unit"]}
             )
 
-            # Zusätzliche Produktdetails holen
-            product_ids = [line["product_id"][0] for line in lines_raw if isinstance(line.get("product_id"), list)]
-            products_raw = self.models.execute_kw(
-                self.db, self.uid, self.password,
-                "product.product", "read",
-                [product_ids],
-                {
-                    "fields": [
-                        "id", "name", 
-                        "default_code",
-                        "x_studio_ce",
-                        "x_studio_gebrauchsanweisung",
-                        "x_studio_udi",
-                        "x_studio_medizinprodukt",
-                        "x_studio_singel_use"
-                    ]
-                }
-            )
-            product_map = {p["id"]: p for p in products_raw}
+            # Produkt-IDs extrahieren
+            product_ids = [
+                line["product_id"][0] for line in lines_raw 
+                if isinstance(line.get("product_id"), list)
+            ]
+
+            # Produktdetails laden
+            product_map = self.get_product_details(product_ids)
 
             # Zusammenbau und Rückgabe der Bestellungsdaten.
             return [
                 SaleOrderLine(
-                    product_id=line["product_id"][0],
-                    product_name=product_map.get(line["product_id"][0], {}).get("name", "Unbekannt"),
-                    quantity=line.get("product_uom_qty", 0),
+                    id=line["product_id"][0],
+                    name=product_map.get(line["product_id"][0], ProductItem(0, "Unbekannt")).name,
+                    default_code=product_map.get(line["product_id"][0], {}).default_code,
+                    ce=product_map.get(line["product_id"][0], {}).ce,
+                    user_manual=product_map.get(line["product_id"][0], {}).user_manual,
+                    udi=product_map.get(line["product_id"][0], {}).udi,
+                    medical_device=product_map.get(line["product_id"][0], {}).medical_device,
+                    single_use=product_map.get(line["product_id"][0], {}).single_use,
+                    quantity=line.get("product_uom_qty", 0.0),
                     price=line.get("price_unit", 0.0),
-                    default_code=product_map.get(line["product_id"][0], {}).get("default_code"),
-                    ce=product_map.get(line["product_id"][0], {}).get("x_studio_ce", False),
-                    user_manual=product_map.get(line["product_id"][0], {}).get("x_studio_gebrauchsanweisung", False),
-                    udi=product_map.get(line["product_id"][0], {}).get("x_studio_udi"),
-                    medical_device=product_map.get(line["product_id"][0], {}).get("x_studio_medizinprodukt", False),
-                    single_use=product_map.get(line["product_id"][0], {}).get("x_studio_singel_use", False)
-                ) for line in lines_raw if isinstance(line.get("product_id"), list)
+                    order_id=line.get("order_id", [None])[0],
+                )
+                for line in lines_raw if isinstance(line.get("product_id"), list)
             ]
         
         except Exception as e:
-            raise Exception(f"Fehler beim Abrufen der Rechnungsdaten: {str(e)}")
+            raise Exception(f"Fehler beim Abrufen der Bestelldaten: {str(e)}")
 # ----------------------------------------------------------------------------
-    def get_invoices_by_ids(self, invoice_ids: list[int]):
-        if not invoice_ids:
-            return []
-
-        try:
-            invoice_data = self.models.execute_kw(
-                self.db, self.uid, self.password,
-                "account.move", "read",
-                [invoice_ids],
-                {"fields": ["id", "name", "invoice_date", "amount_total", "state"]}
-            )
-
-            return [
-                Invoice(
-                    id=inv["id"],
-                    name=inv.get("name", "Unbekannt"),
-                    date=inv.get("invoice_date"),
-                    total=inv.get("amount_total", 0.0),
-                    state=inv.get("state", "unknown")
-                )
-                for inv in invoice_data
-            ]
-
-        except Exception as e:
-            raise Exception(f"Fehler beim Abrufen der Rechnungsdaten: {str(e)}")
+# endregion
+# ----------------------------------------------------------------------------
+# region Fertigung
 # ----------------------------------------------------------------------------
     #TODO: Methode get_income_by_id
 # ----------------------------------------------------------------------------
     #TODO: Methode get_manufacturing_order_by_id
 # ----------------------------------------------------------------------------
-def get_manufacturing_orders(self, limit=20):
-    if not self.isConnected:
-        raise Exception("Nicht verbunden mit Odoo.")
+    def get_manufacturing_orders(self, limit: int = 20) -> list[ManufacturingOrder]:
+        """
+        Holt Fertigungsaufträge mit Hauptprodukt und Komponenten.
+        """
+        if not self.isConnected:
+            raise Exception("Nicht verbunden mit Odoo.")
 
-    try:
-        orders_raw = self.models.execute_kw(
-            self.db, self.uid, self.password,
-            'mrp.production', 'search_read',
-            [[]],  # alle Fertigungsaufträge
-            {
-                'fields': [
-                    'name',
-                    'product_id',
-                    'product_qty',
-                    'date_planned_start',
-                    'raw_material_move_ids'
-                ],
-                'limit': limit,
-                'order': 'date_planned_start desc'
-            }
-        )
+        try:
+            # Fertigungsaufträge aus Odoo holen
+            orders_raw = self.models.execute_kw(
+                self.db, self.uid, self.password,
+                'mrp.production', 'search_read',
+                [[]],  # alle Fertigungsaufträge
+                {
+                    'fields': [
+                        'id',
+                        'name',
+                        'product_id',
+                        'product_qty',
+                        'date_start',
+                        'move_raw_ids'
+                    ],
+                    'limit': limit,
+                    'order': 'date_start desc'
+                }
+            )
 
-        orders = []
-        for order in orders_raw:
-            components_ids = order.get("raw_material_move_ids", [])
+            orders: list[ManufacturingOrder] = []
 
-            # Verwende get_order_lines für Komponenten
-            components = self.get_order_lines(components_ids)
+            for order in orders_raw:
+                product_id = order.get("product_id", [None])[0]
+                product_data = None
 
-            orders.append(ManufacturingOrder(
-                id=order.get("id"),
-                name=order.get("name", "Unbekannt"),
-                product_name=order.get("product_id", ["", "Unbekannt"])[1],
-                quantity=order.get("product_qty", 0.0),
-                date_planned=order.get("date_planned_start", "")[:10],
-                components=components
-            ))
+                if product_id:
+                    # Produktdetails über die neue Hilfsmethode laden
+                    product_data = self.get_product_details(product_id)
 
-        return orders
+                # Komponenten holen (z. B. Rohmaterialien)
+                component_ids = order.get("move_raw_ids", [])
+                components = self.get_components(component_ids)
 
-    except Exception as e:
-        raise Exception(f"Fehler beim Abrufen der Fertigungsdaten: {str(e)}")
+                # ManufacturingOrder-Instanz aufbauen
+                orders.append(
+                    ManufacturingOrder(
+                        id=order.get("id"),
+                        manufacturing_name=order.get("name", "Unbekannt"),
+                        product_id=product_data.get(product_id, {}).id if product_data else None,
+                        name=product_data.get(product_id, {}).name if product_data else "Unbekannt",
+                        default_code=product_data.get(product_id, {}).default_code,
+                        quantity=order.get("product_qty", 0.0),
+                        date_start=order.get("date_start", "")[:10],
+                        ce=product_data.get(product_id, {}).ce if product_data else False,
+                        user_manual=product_data.get(product_id, {}).user_manual if product_data else False,
+                        udi=product_data.get(product_id, {}).udi if product_data else None,
+                        medical_device=product_data.get(product_id, {}).medical_device if product_data else False,
+                        single_use=product_data.get(product_id, {}).single_use if product_data else False,
+                        components=components
+                    )
+                )
+
+            return orders
+
+        except Exception as e:
+            raise Exception(f"Fehler beim Abrufen der Fertigungsdaten: {str(e)}")
 # ----------------------------------------------------------------------------
-def get_components(self, move_ids: list[int]) -> list[SaleOrderLine]:
-    if not move_ids:
-        return []
+    def get_components(self, move_ids: list[int]) -> list[Component]:
+        """
+        Lädt Fertigungskomponenten (Stock Moves) inkl. Produktdetails.
+        """
+        if not move_ids:
+            return []
 
-    try:
-        move_data = self.models.execute_kw(
-            self.db, self.uid, self.password,
-            'stock.move', 'read',
-            [move_ids],
-            {
-                'fields': [
-                    'product_id',
-                    'product_uom_qty',
-                    # ggf. Custom-Felder, falls auf `stock.move` gemappt
-                    'x_studio_ce',
-                    'x_studio_gebrauchsanweisung',
-                    'x_studio_udi',
-                    'x_studio_medizinprodukt',
-                    'x_studio_single_use',
-                ]
-            }
-        )
+        try:
+            # Moves laden (Lagerbewegungen für die Fertigung)
+            move_data = self.models.execute_kw(
+                self.db, self.uid, self.password,
+                'stock.move', 'read',
+                [move_ids],
+                {"fields": ["id", "product_id", "product_uom_qty", "price_unit"]}
+            )
 
-        components = []
-        for move in move_data:
-            product = move.get("product_id")
-            product_name = product[1] if isinstance(product, list) else "Unbekannt"
+            # Produkt-IDs aus den Moves sammeln
+            product_ids = [
+                move["product_id"][0] for move in move_data 
+                if isinstance(move.get("product_id"), list)
+            ]
 
-            components.append(SaleOrderLine(
-                id=move.get("id"),
-                product_name=product_name,
-                qty=move.get("product_uom_qty", 0.0),
-                price=0.0,  # keine Preisangabe bei Komponenten
+            # Produktdetails laden
+            product_map = self.get_product_details(product_ids)
 
-                ce=move.get("x_studio_ce", False),
-                user_manual=move.get("x_studio_gebrauchsanweisung", False),
-                udi=move.get("x_studio_udi", ""),
-                medical_device=move.get("x_studio_medizinprodukt", False),
-                single_use=move.get("x_studio_single_use", False),
-            ))
+            # Zusammenbauen
+            return [
+                Component(
+                    id=move["product_id"][0],
+                    name=product_map.get(move["product_id"][0], ProductItem(0, "Unbekannt")).name,
+                    default_code=product_map.get(move["product_id"][0], {}).default_code,
+                    ce=product_map.get(move["product_id"][0], {}).ce,
+                    user_manual=product_map.get(move["product_id"][0], {}).user_manual,
+                    udi=product_map.get(move["product_id"][0], {}).udi,
+                    medical_device=product_map.get(move["product_id"][0], {}).medical_device,
+                    single_use=product_map.get(move["product_id"][0], {}).single_use,
+                    quantity=move.get("product_uom_qty", 0.0),
+                    price=move.get("price_unit", 0.0),
+                    move_id=move.get("id"),
+                )
+                for move in move_data if isinstance(move.get("product_id"), list)
+            ]
 
-        return components
+        except Exception as e:
+            raise Exception(f"Fehler beim Abrufen der Komponenten: {str(e)}")
+# ----------------------------------------------------------------------------
+# endregion
+# ----------------------------------------------------------------------------
+# region Einkäufe
+# ----------------------------------------------------------------------------
+    def get_purchases(self, limit=20) -> list[PurchaseOrder]:
+        """
+        Lädt Einkaufsbestellungen (purchase.order) mit ihren Positionen.
+        """
+        if not self.isConnected:
+            raise Exception("Nicht verbunden mit Odoo.")
 
-    except Exception as e:
-        raise Exception(f"Fehler beim Abrufen der Komponenten: {str(e)}")
+        try:
+            # Einkaufsaufträge holen
+            orders_raw = self.models.execute_kw(
+                self.db, self.uid, self.password,
+                "purchase.order", "search_read",
+                [[]],  # alle Bestellungen
+                {
+                    "fields": [
+                        "id", "name", "date_order",
+                        "partner_id", "order_line"
+                    ],
+                    "limit": limit,
+                    "order": "date_order desc",
+                }
+            )
+
+            purchases = [
+                PurchaseOrder(
+                    id=order.get("id"),
+                    name=order.get("name", "Unbekannt"),
+                    partner_name=order.get("partner_id", ["", "Unbekannt"])[1],
+                    date_order=order.get("date_order", "")[:10],
+                    lines= self.get_purchase_lines(order.get("order_line",[])),
+                    invoices=self.get_invoices_by_id_list(order.get("invoice_ids", []))
+                ) for order in orders_raw
+            ]
+
+            return purchases
+
+        except Exception as e:
+            raise Exception(f"Fehler beim Abrufen der Einkaufsbestellungen: {str(e)}")
+# ----------------------------------------------------------------------------
+    def get_purchase_lines(self, purchase_line_ids: list[int]) -> list[PurchaseOrderLine]:
+        """
+        Lädt Einkaufszeilen (purchase.order.line) inkl. Produktdetails.
+        """
+        if not purchase_line_ids:
+            return []
+
+        try:
+            # Einkaufszeilen lesen
+            lines_raw = self.models.execute_kw(
+                self.db, self.uid, self.password,
+                "purchase.order.line", "read",
+                [purchase_line_ids],
+                {"fields": ["order_id", "product_id", "product_qty", "price_unit"]}
+            )
+
+            # Produktdetails laden
+            product_ids = [line["product_id"][0] for line in lines_raw if isinstance(line.get("product_id"), list)]
+            product_map = self.get_product_details(product_ids)
+
+            # Zusammenbauen
+            return [
+                PurchaseOrderLine(
+                    id=line["product_id"][0],
+                    name=product_map.get(line["product_id"][0], ProductItem(0, "Unbekannt")).name,
+                    default_code=product_map.get(line["product_id"][0], {}).default_code,
+                    ce=product_map.get(line["product_id"][0], {}).ce,
+                    user_manual=product_map.get(line["product_id"][0], {}).user_manual,
+                    udi=product_map.get(line["product_id"][0], {}).udi,
+                    medical_device=product_map.get(line["product_id"][0], {}).medical_device,
+                    single_use=product_map.get(line["product_id"][0], {}).single_use,
+                    quantity=line.get("product_qty", 0.0),
+                    price=line.get("price_unit", 0.0),
+                    order_id=line.get("order_id", [None])[0],
+                )
+                for line in lines_raw if isinstance(line.get("product_id"), list)
+            ]
+
+        except Exception as e:
+            raise Exception(f"Fehler beim Abrufen der Einkaufsdaten: {str(e)}")
+# ----------------------------------------------------------------------------
+# endregion
 # ----------------------------------------------------------------------------
