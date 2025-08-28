@@ -481,7 +481,7 @@ class ProductPage(ttk.Frame):
 
             self.label_printer.create_product_label_pdf(file_name, self.product)
 
-        # self.label_printer.send_pdf_to_printnode(file_name)
+        self.label_printer.send_pdf_to_printnode(file_name)
 
         # Ausgabe
         print(f"Etikett gespeichert als: {file_name}")
