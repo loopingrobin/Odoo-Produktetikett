@@ -184,14 +184,34 @@ class ProductPage(ttk.Frame):
         self.tree_products.pack(fill="both", expand=True)
         self.tree_products.bind("<<TreeviewSelect>>", self.on_component_selected)
 
-        # Etikett-Vorschau
-        ttk.Label(right_frame, text="Etikett-Vorschau").pack(pady=(15, 5), anchor="w")
-        self.label_preview = tk.Text(right_frame, height=10, wrap="word")
-        self.label_preview.pack(fill="both", expand=True)
-        
-        self.qr_label = ttk.Label(right_frame)
-        self.qr_label.pack(pady=5)
+        # Vorschau
+        preview_frame = ttk.Frame(right_frame)
+        preview_frame.pack(anchor="nw", pady=(5, 10), fill="x")
 
+        # Überschrift
+        ttk.Label(preview_frame, text="Etikett-Vorschau").grid(row=0, column=0, sticky="w", padx=(0, 10))
+
+        # QR-Code rechts von der Überschrift
+        self.qr_label = ttk.Label(preview_frame)
+        self.qr_label.grid(row=0, column=1, rowspan=2, padx=10, sticky="n")
+
+        # Etikett-Vorschau (Textfeld)
+        self.label_preview = tk.Text(preview_frame, height=10, wrap="word")
+        self.label_preview.grid(row=1, column=0, sticky="nsew", pady=(5, 0))
+
+        # Grid-Konfiguration für saubere Größenanpassung
+        preview_frame.columnconfigure(0, weight=1)   # Textfeld dehnt sich
+        preview_frame.columnconfigure(1, weight=0)   # QR-Code behält feste Größe
+
+
+        # Stückzahl
+        # Eingabefeld für aktuelle Stückzahl
+        ttk.Label(right_frame, text="Aktuelle Stückzahl:").pack(anchor="w", pady=(5, 2))
+        self.current_qty_var = tk.StringVar()   # StringVar, damit Eingabe leer bleiben kann
+        self.current_qty_entry = ttk.Entry(right_frame, textvariable=self.current_qty_var)
+        self.current_qty_entry.pack(anchor="w", pady=(0, 10))
+
+        # Button "Etiketten drucken".
         ttk.Button(right_frame, text="Etikett drucken", command=self.print_label).pack(fill="x", pady=5)
 # ----------------------------------------------------------------------------
 # endregion
@@ -242,10 +262,12 @@ class ProductPage(ttk.Frame):
                         values=(
                             component.default_code, 
                             component.name, 
-                            f"{component.quantity:.2f} Stück"
+                            f"{component.quantity:.0f} Stück"
                         )
                     )
                 self.load_label_data()
+
+            self.tree_products.event_generate("<<TreeviewSelect>>")
 
         except Exception as e:
             messagebox.showerror("Fehler", f"Produkte konnten nicht geladen werden:\n{str(e)}")
@@ -329,7 +351,7 @@ class ProductPage(ttk.Frame):
                         component.manufacturing_name,
                         component.default_code,
                         component.name,
-                        f"{sum(c.quantity for c in component.components)} Stück"
+                        f"{component.quantity:.0f} Stück"
                     )
                 )
 
@@ -461,8 +483,9 @@ class ProductPage(ttk.Frame):
 
                 file_name = self.sanitize_filename(f"{default_code}_{chargenr}_{timestamp}.pdf")
                 
+                current_qty = self.current_qty_var.get().strip()
                 self.label_printer.create_order_label_pdf(
-                    file_name, self.product, self.component, invoice
+                    file_name, self.product, self.component, invoice, current_qty
                 )
             else:
                 messagebox.showinfo("Fehlende Daten", "Keine Rechnung vorhanden, bitte Datensatz mit Rechnung auswählen!")
@@ -479,7 +502,8 @@ class ProductPage(ttk.Frame):
 
             file_name = self.sanitize_filename(f"{default_code}_{lot}_{timestamp}.pdf")
 
-            self.label_printer.create_product_label_pdf(file_name, self.product)
+            current_qty = self.current_qty_var.get().strip()
+            self.label_printer.create_product_label_pdf(file_name, self.product, current_qty)
 
         self.label_printer.send_pdf_to_printnode(file_name)
 

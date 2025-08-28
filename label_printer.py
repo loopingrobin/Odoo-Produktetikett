@@ -40,7 +40,7 @@ class LabelPrinter:
             "header": ParagraphStyle(
                 name="Header",
                 fontName="Titillium",
-                fontSize=20,
+                fontSize=18,
                 leading=24,
                 alignment=1  # 0=linksbündig, 1=zentriert
             ),
@@ -120,7 +120,7 @@ class LabelPrinter:
 
         c.save()
 # ----------------------------------------------------------------------------
-    def create_order_label_pdf(self, file_name: str, order: PurchaseOrder, component: PurchaseOrderLine, invoice: Invoice):
+    def create_order_label_pdf(self, file_name: str, order: PurchaseOrder, component: PurchaseOrderLine, invoice: Invoice, user_quantity: int):
         """
         Erstellt das Auftragsetikett und speichert es als PDF.
         """
@@ -148,14 +148,24 @@ class LabelPrinter:
         )
 
         # Artikelnummer
-        # y += 1 * mm
-        c.setFont("Titillium", 20)
-        c.drawString(35 * mm, y, f"{component.default_code}")
-        c.setFont("Titillium", 10)
+        y -= 6 * mm
+        # c.drawString(35 * mm, y, f"{component.default_code}")
+        self.draw_paragraph(
+            c, component.default_code,
+            x=5 * mm, y=y,
+            w=90 * mm, h=15 * mm,
+            style="header"
+        )
 
-        # Menge und Datum
-        y -= 8 * mm
-        c.drawString(5 * mm, y, f"Stück   {int(component.quantity)}")
+        # Menge
+        y -= 2 * mm
+        if user_quantity.isdigit():
+            c.setFont("Titillium", 7)
+            quantity_sting = f"Stück {user_quantity} / {int(getattr(component, 'quantity', 0) or 0)}"
+        else:
+            quantity_sting = f"Stück   {int(component.quantity)}"
+            
+        c.drawString(5 * mm, y, quantity_sting)
 
         # QR-Code
         qr_img = self.generate_qr_code(component.default_code + "-" + invoice.name)
@@ -168,7 +178,7 @@ class LabelPrinter:
         # Speichern
         c.save()
 # ----------------------------------------------------------------------------
-    def create_product_label_pdf(self, file_name: str, product: ManufacturingOrder):
+    def create_product_label_pdf(self, file_name: str, product: ManufacturingOrder, user_quantity: int):
         """
         Erstellt das Auftragsetikett und speichert es als PDF.
         """
@@ -196,21 +206,27 @@ class LabelPrinter:
         x_symbol = 21 * mm
 
         # REF
+        y -= 1 * mm
         c.drawImage(self.ref_image, 4 * mm, y, width=width_symbol, height=heigth_symbol, preserveAspectRatio=True, mask='auto')
-        c.setFont("Titillium", 20)
-        c.drawString(25 * mm, y - 0.5 * mm, f"{product.default_code}")
+        y -= 5 * mm
+        self.draw_paragraph(
+            c, product.default_code,
+            x=5 * mm, y=y,
+            w=90 * mm, h=15 * mm,
+            style="header"
+        )
         c.setFont("Titillium", 7)
         
         # UDI
-        y -= 8 * mm
+        y -= 2 * mm
         if product.udi:
             c.drawImage(self.udi_image, x_symbol, y, width=width_symbol, height=heigth_symbol, preserveAspectRatio=True, mask='auto')
-            c.drawString(x_symbol + 6 * mm, y + 0.5 * mm, f"{product.udi}")
+            c.drawString(x_symbol + 6 * mm, y + 1 * mm, f"{product.udi}")
 
         # LOT
         y -= 5 * mm
         c.drawImage(self.lot_image, x_symbol, y, width=width_symbol, height=heigth_symbol, preserveAspectRatio=True, mask='auto')
-        c.drawString(x_symbol + 6 * mm, y, f"{product.lot_producing_id[1]}")
+        c.drawString(x_symbol + 6 * mm, y + 1 * mm, f"{product.lot_producing_id[1]}")
 
         # QR-Code
         x_qr = 3 * mm
@@ -239,10 +255,16 @@ class LabelPrinter:
             x_symbol_row += 5 * mm
         if product.ce:
             c.drawImage(self.ce_image, x_symbol + x_symbol_row, y, width=10, height=10, preserveAspectRatio=True, mask='auto')
-            x_symbol_row += 6 * mm
+            x_symbol_row += 7 * mm
         c.drawImage(self.production_date_image, x_symbol + x_symbol_row, y + 1 * mm, width=8, height=8, preserveAspectRatio=True, mask='auto')
         c.setFont("Titillium", 5)
-        c.drawString(x_symbol + x_symbol_row - 1 * mm, y - 0.5 * mm, datetime.strptime(product.date_start, "%Y-%m-%d").strftime("%y/%m"))
+        c.drawString(x_symbol + x_symbol_row - 2 * mm, y - 0.5 * mm, datetime.strptime(product.date_start, "%Y-%m-%d").strftime("%Y/%m"))
+        x_symbol_row += 7 * mm
+
+        # Stückzahl
+        if user_quantity.isdigit():
+            c.setFont("Titillium", 7)
+            c.drawString(x_symbol + x_symbol_row, y + 1 * mm, f"Stück {user_quantity} / {int(getattr(product, 'quantity', 0) or 0)}")
 
         # Kontaktdaten
         x_contact = 70 * mm
