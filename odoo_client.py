@@ -67,6 +67,7 @@ class ManufacturingOrder(ProductItem):
     product_id: int = 0
     manufacturing_name: str = ""
     date_start: str = ""
+    lot_producing_id: str = ""
     components: List[Component] = field(default_factory=list)
 
 @dataclass
@@ -74,8 +75,6 @@ class PurchaseOrderLine(ProductItem):
     """
     Erweiterung für die Einkaufszeilen (Purchase Order Line).
     """
-    quantity: float = 0.0
-    price: float = 0.0
     order_id: int | None = None
 
 @dataclass
@@ -87,6 +86,7 @@ class PurchaseOrder:
     name: str
     partner_name: str
     date_order: str
+    amount_total:float
     lines: list[PurchaseOrderLine]
     invoices: list[Invoice]
 
@@ -196,6 +196,9 @@ class OdooClient:
             raise Exception(f"Fehler beim Abrufen der Produktdetails: {str(e)}")
 # ----------------------------------------------------------------------------
     def get_invoices_by_id_list(self, invoice_ids: list[int]) -> list[Invoice]:
+        """
+        Läd Details der Rechnungen.
+        """
         if not invoice_ids:
             return []
 
@@ -336,6 +339,7 @@ class OdooClient:
                         'product_id',
                         'product_qty',
                         'date_start',
+                        'lot_producing_id',
                         'move_raw_ids'
                     ],
                     'limit': limit,
@@ -367,6 +371,7 @@ class OdooClient:
                         default_code=product_data.get(product_id, {}).default_code,
                         quantity=order.get("product_qty", 0.0),
                         date_start=order.get("date_start", "")[:10],
+                        lot_producing_id=order.get("lot_producing_id", ""),
                         ce=product_data.get(product_id, {}).ce if product_data else False,
                         user_manual=product_data.get(product_id, {}).user_manual if product_data else False,
                         udi=product_data.get(product_id, {}).udi if product_data else None,
@@ -447,7 +452,8 @@ class OdooClient:
                 {
                     "fields": [
                         "id", "name", "date_order",
-                        "partner_id", "order_line"
+                        "partner_id", "order_line",
+                        "invoice_ids", "amount_total"
                     ],
                     "limit": limit,
                     "order": "date_order desc",
@@ -460,6 +466,7 @@ class OdooClient:
                     name=order.get("name", "Unbekannt"),
                     partner_name=order.get("partner_id", ["", "Unbekannt"])[1],
                     date_order=order.get("date_order", "")[:10],
+                    amount_total=order.get("amount_total",0.0),
                     lines= self.get_purchase_lines(order.get("order_line",[])),
                     invoices=self.get_invoices_by_id_list(order.get("invoice_ids", []))
                 ) for order in orders_raw

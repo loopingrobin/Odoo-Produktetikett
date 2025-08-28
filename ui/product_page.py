@@ -1,8 +1,9 @@
+from datetime import datetime
+import re
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
-import qrcode
-from PIL import Image, ImageTk
+from PIL import ImageTk
 import threading
 
 class LoadingPopup(tk.Toplevel):
@@ -70,7 +71,8 @@ class ProductPage(ttk.Frame):
         self.product = None
         self.components_data = None
         self.component = None
-        self.mode_var = tk.StringVar(value="Produktetikett") # Default
+        self.mode_var = tk.StringVar(value="Produktetikett")
+        self.limit_var = tk.StringVar(value=20)
 
         self.build_ui()
         # self.winfo_toplevel().minsize(1000, 600)
@@ -101,16 +103,45 @@ class ProductPage(ttk.Frame):
         left_frame = ttk.Frame(container)
         left_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
 
-        # Dropdown für Auswahl
-        ttk.Label(left_frame, text="Etikett-Typ:").pack(anchor="w", pady=(5, 2))
+        # Frame für die Controls
+        controls_frame = ttk.Frame(left_frame)
+        controls_frame.pack(anchor="nw", pady=(5, 10), fill="x")
+
+        # Dropdown Etikett-Typ
+        ttk.Label(controls_frame, text="Etikett-Typ:").grid(row=0, column=0, sticky="w")
         self.mode_select = ttk.Combobox(
-            left_frame,
+            controls_frame,
             textvariable=self.mode_var,
-            values=["Produktetikett", "Auftragsetikett"],
-            state="readonly"
+            values=["Auftragsetikett", "Produktetikett"],
+            state="readonly",
+            width=15
         )
-        self.mode_select.pack(anchor="w", pady=(0, 10))
+        self.mode_select.grid(row=1, column=0, padx=5, pady=(0, 5), sticky="w")
         self.mode_select.bind("<<ComboboxSelected>>", self.on_mode_change)
+
+        # Dropdown Limit
+        ttk.Label(controls_frame, text="Anzahl Einträge:").grid(row=0, column=1, sticky="w")
+        self.limit_select = ttk.Combobox(
+            controls_frame,
+            textvariable=self.limit_var,
+            values=[20, 50, 100, 200, 500],
+            state="readonly",
+            width=10
+        )
+        self.limit_select.grid(row=1, column=1, padx=5, pady=(0, 5), sticky="w")
+
+        # Button "Daten laden"
+        button = ttk.Button(
+            controls_frame, 
+            text="Daten laden", 
+            command=self.load_overview_data
+        )
+        button.grid(row=1, column=2, padx=10, pady=(0, 5), sticky="w")
+
+        # Optional: gleichmäßige Spaltenverteilung
+        controls_frame.grid_columnconfigure(0, weight=1)
+        controls_frame.grid_columnconfigure(1, weight=1)
+        controls_frame.grid_columnconfigure(2, weight=0)
 
         # Gesamtsübersicht
         self.tree = ttk.Treeview(
@@ -129,6 +160,9 @@ class ProductPage(ttk.Frame):
 
         self.tree.pack(fill="both", expand=True)
 
+        # Anzeige der Anzahl der geladenen Einträge
+        self.entries_tree = ttk.Label(left_frame, text="0 Einträge")
+        self.entries_tree.pack(fill="both", expand=True)
         # Rechte Spalte
         right_frame = ttk.Frame(container)
         right_frame.grid(row=0, column=1, sticky="nsew")
@@ -170,11 +204,7 @@ class ProductPage(ttk.Frame):
         Bei Auswahländerung im Dropdown werden die Daten für das ausgewählte
         Etikettenformat in das Treeview 'Gesamtübersicht' geladen.
         """
-        # mode = self.mode_var.get()
-        # if mode == "Produktetikett":
-        #     self.load_manufacturing_data()
-        # elif mode == "Auftragsetikett":
-        self.load_overview_data()
+        # self.load_overview_data()
 # ----------------------------------------------------------------------------
     def on_overview_selected(self, event):
         """
@@ -216,6 +246,7 @@ class ProductPage(ttk.Frame):
                             f"{component.quantity:.2f} Stück"
                         )
                     )
+                self.load_label_data()
 
         except Exception as e:
             messagebox.showerror("Fehler", f"Produkte konnten nicht geladen werden:\n{str(e)}")
@@ -233,14 +264,17 @@ class ProductPage(ttk.Frame):
         def load():
             try:
                 if mode == "Auftragsetikett":
-                    self.overview_data = self.odoo_client.get_purchases(limit=20)
+                    self.overview_data = self.odoo_client.get_purchases(limit=int(self.limit_var.get()))
                 elif mode == "Produktetikett":
-                    self.overview_data = self.odoo_client.get_manufacturing_orders(limit=20)
+                    self.overview_data = self.odoo_client.get_manufacturing_orders(limit=int(self.limit_var.get()))
 
                 # GUI-Aktualisierung im Hauptthread
                 self.tree.after(0, lambda: self.write_overview_data())
                 if not loading_popup.cancelled:
                     print("Laden abgeschlossen.")
+
+                # Anzahl Einträge wird nach dem laden dargestellt.
+                self.entries_tree.configure(text=f"{len(self.overview_data)} Einträge")
 
             except Exception as e:
                 error_context = "Fertigungsdaten" if mode == "Produktetikett" else "Einkaufsdaten"
@@ -277,7 +311,7 @@ class ProductPage(ttk.Frame):
                         purchase.name,
                         purchase.invoices[0].name if purchase.invoices else "Keine Rechnung",
                         purchase.partner_name,
-                        f"{purchase.lines[i].price:.2f} €"
+                        f"{purchase.amount_total:.2f} €"
                     )
                 )
 
@@ -296,9 +330,11 @@ class ProductPage(ttk.Frame):
                         component.manufacturing_name,
                         component.default_code,
                         component.name,
-                        f"{component.components[i].quantity} Stück"
+                        f"{sum(c.quantity for c in component.components)} Stück"
                     )
                 )
+
+        self.tree.event_generate("<<TreeviewSelect>>")
 # ----------------------------------------------------------------------------
 # endregion
 # ----------------------------------------------------------------------------
@@ -343,26 +379,29 @@ class ProductPage(ttk.Frame):
 
         mode = self.mode_var.get()
         # Auftragsetikett
-        if mode == "Auftragsetikett":
-            # Text vorbereiten.
+        if mode == "Auftragsetikett" and self.product:
+            invoices = getattr(self.product, "invoices", [])
             preview = (
-                f"Bezeichnung: {self.component.name}\n"
-                f"Artikelnummer: {self.component.default_code}\n"
-                f"Chargennummer: {getattr(self.component, 'lot_producing_id', ['','Unbekannt'])[1]}\n"
-                f"Menge: {self.component.quantity}\n"
-                f"Lieferant: {self.product.partner_name}\n"
+                f"Chargennummer: {invoices[0].name if invoices else 'Keine Rechnung'}\n"
+                f"Bezeichnung: {getattr(self.component, 'name', 'Unbekannt')}\n"
+                f"Artikelnummer: {getattr(self.component, 'default_code', '')}\n"
+                f"Menge: {getattr(self.component, 'quantity', 0)}\n"
+                f"Lieferant: {getattr(self.product, 'partner_name', 'Unbekannt')}\n"
+                f"Rechnung vom {invoices[0].date if invoices else 'Keine Rechnung'}"
             )
 
         # Produktetikett
-        elif mode == "Produktetikett":
+        elif mode == "Produktetikett" and self.product:
             preview = (
-                f"Produkt: {self.product.name}\n"
-                f"Referenz: {self.product.default_code}\n"
-                f"UDI: {self.product.udi if self.product.udi else ''}\n"
-                f"CE-Kennzeichnung: {'Ja' if self.product.ce else 'Nein'}\n"
-                f"Gebrauchsanweisung: {'Ja' if self.product.user_manual else 'Nein'}\n"
-                f"Medizinprodukt: {'Ja' if self.product.medical_device else 'Nein'}\n"
-                f"Einmalverwendung: {'Ja' if self.product.single_use else 'Nein'}"
+                f"Produkt: {getattr(self.product, 'name', 'Unbekannt')}\n"
+                f"Referenz: {getattr(self.product, 'default_code', '')}\n"
+                # f"LOT: {getattr(self.product, 'lot_production_id', ['', ''])[1]}\n"
+                f"LOT: {getattr(self.product, 'lot_producing_id', ['', ''])[1]}\n"
+                f"UDI: {getattr(self.product, 'udi', '')}\n"
+                f"CE-Kennzeichnung: {'Ja' if getattr(self.product, 'ce', False) else 'Nein'}\n"
+                f"Gebrauchsanweisung: {'Ja' if getattr(self.product, 'user_manual', False) else 'Nein'}\n"
+                f"Medizinprodukt: {'Ja' if getattr(self.product, 'medical_device', False) else 'Nein'}\n"
+                f"Einmalverwendung: {'Ja' if getattr(self.product, 'single_use', False) else 'Nein'}"
             )
 
         # Text anzeigen.
@@ -370,13 +409,14 @@ class ProductPage(ttk.Frame):
         self.label_preview.insert("1.0", preview)
 
         # QR-Code vorbereiten.
-        qr = qrcode.QRCode(box_size=4, border=2)
-        qr.add_data(self.product.udi)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
-        img = img.resize((150, 150), Image.Resampling.LANCZOS)
+        img = None
+        if self.product and (data := {
+            "Auftragsetikett": getattr(self.component, "default_code", None),
+            "Produktetikett": getattr(self.product, "udi", None),
+        }.get(mode)):
+            img = self.label_printer.generate_qr_pil(data, 100)
 
-        # QR-Code anzeigen.
+        # Anzeige in Tkinter
         self.qr_image = ImageTk.PhotoImage(img)
         self.qr_label.configure(image=self.qr_image)
 # ----------------------------------------------------------------------------
@@ -384,14 +424,55 @@ class ProductPage(ttk.Frame):
         """
         Erstellt das Label und sendet es an den Drucker.
         """
-        # Etikett drucken
-        # zpl = printer.generate_zpl(product)
-        # printer.print_label(zpl)
-        pfad = "etikett.pdf"
-        self.label_printer.create_pdf(pfad, self.component)
-        self.label_printer.send_pdf_to_printnode(pfad)
+        mode = self.mode_var.get()
 
-        print("Etikett wurde gesendet.")
+        # Zeitstempel generieren (z. B. 20250827_153012)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+
+        file_name = "test.pdf"
+
+        # Auftragsetikett
+        if mode == "Auftragsetikett" and self.product:
+            if self.product.invoices:
+                invoice = self.product.invoices[0]
+
+                # Chargennummer ohne "RG"
+                chargenr = invoice.name.removeprefix("RG") if invoice.name else "NOCHARGE"
+
+                # Default Code sauber machen (nur Buchstaben/Zahlen)
+                default_code = getattr(self.component, "default_code", "NODEFAULT")
+                # default_code = re.sub(r"[^A-Za-z0-9_-]", "_", default_code)
+
+                file_name = self.sanitize_filename(f"{default_code}_{chargenr}_{timestamp}.pdf")
+                
+                self.label_printer.create_order_label_pdf(
+                    file_name, self.product, self.component, invoice
+                )
+            else:
+                messagebox.showinfo("Fehlende Daten", "Keine Rechnung vorhanden, bitte Datensatz mit Rechnung auswählen!")
+        
+        # Produktetikett
+        elif mode == "Produktetikett" and self.product:
+            lot = getattr(self.product, "lot_producing_id", None)
+            if isinstance(lot, list) and len(lot) > 1:
+                lot = lot[1]
+            lot = lot or "NOLOT"
+
+            default_code = getattr(self.product, "default_code", "NODEFAULT")
+            # default_code = re.sub(r"[^A-Za-z0-9_-]", "_", default_code)
+
+            file_name = self.sanitize_filename(f"{default_code}_{lot}_{timestamp}.pdf")
+
+            self.label_printer.create_product_label_pdf(file_name, self.product)
+
+        self.label_printer.send_pdf_to_printnode(file_name)
+
+        # Ausgabe
+        print(f"Etikett gespeichert als: {file_name}")
+# ----------------------------------------------------------------------------
+    def sanitize_filename(self, name: str) -> str:
+        # Alles außer Buchstaben, Zahlen, Unterstrich und Bindestrich durch "_" ersetzen
+        return re.sub(r'[\\/*?:"<>|]', "_", name)
 # ----------------------------------------------------------------------------
 # endregion
 # ----------------------------------------------------------------------------
