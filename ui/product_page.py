@@ -1,8 +1,7 @@
 from datetime import datetime
 import re
 import tkinter as tk
-from tkinter import ttk
-from tkinter import messagebox
+from tkinter import ttk, messagebox
 from PIL import ImageTk
 import threading
 
@@ -86,7 +85,7 @@ class ProductPage(ttk.Frame):
         Wird beim öffnen der Produktseite ausgeführt und lässt die Daten der
         Gesamtübersicht laden.
         """
-        self.load_overview_data()
+        # self.load_overview_data()
 # ----------------------------------------------------------------------------
     def build_ui(self):
         """
@@ -410,15 +409,32 @@ class ProductPage(ttk.Frame):
 
         # QR-Code vorbereiten.
         img = None
-        if self.product and (data := {
-            "Auftragsetikett": getattr(self.component, "default_code", None),
-            "Produktetikett": getattr(self.product, "udi", None),
-        }.get(mode)):
-            img = self.label_printer.generate_qr_pil(data, 100)
+        if self.product:
+            if mode == "Produktetikett":
+                # QR-String für Produktetikett
+                parts = []
+                udi = getattr(self.product, "udi", None)
+                lot = getattr(self.product, "lot_producing_id", None)
+                if udi:
+                    parts.append(f"(01){udi}")
+                if lot and len(lot) > 1:
+                    parts.append(f"(10){lot[1]}")
+                qr_string = "".join(parts) if parts else "NO DATA"
 
-        # Anzeige in Tkinter
-        self.qr_image = ImageTk.PhotoImage(img)
-        self.qr_label.configure(image=self.qr_image)
+            elif mode == "Auftragsetikett":
+                # QR-String für Auftragsetikett
+                default_code = getattr(self.component, "default_code", None)
+                invoice_name = getattr(self.product.invoices[0], "name", None) if getattr(self.product, "invoices", []) else None
+                if default_code and invoice_name:
+                    qr_string = f"{default_code}-{invoice_name}"
+                else:
+                    qr_string = "NO DATA"
+
+            img = self.label_printer.generate_qr_pil(qr_string, 100)
+
+            # Anzeige in Tkinter
+            self.qr_image = ImageTk.PhotoImage(img)
+            self.qr_label.configure(image=self.qr_image)
 # ----------------------------------------------------------------------------
     def print_label(self):
         """
@@ -465,7 +481,7 @@ class ProductPage(ttk.Frame):
 
             self.label_printer.create_product_label_pdf(file_name, self.product)
 
-        self.label_printer.send_pdf_to_printnode(file_name)
+        # self.label_printer.send_pdf_to_printnode(file_name)
 
         # Ausgabe
         print(f"Etikett gespeichert als: {file_name}")

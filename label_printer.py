@@ -5,6 +5,8 @@ import base64
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph
 from reportlab.lib.styles import ParagraphStyle
 import qrcode
@@ -33,17 +35,18 @@ class LabelPrinter:
         self.production_date_image = ImageReader("label_pictures\\Firma.png")
 
         # Vordefinierte Styles
+        pdfmetrics.registerFont(TTFont('Titillium', 'fonts/titilliumtext25l.ttf'))
         self.styles = {
             "header": ParagraphStyle(
                 name="Header",
-                fontName="Helvetica",
+                fontName="Titillium",
                 fontSize=20,
                 leading=24,
-                alignment=0  # linksbündig
+                alignment=1  # 0=linksbündig, 1=zentriert
             ),
             "small": ParagraphStyle(
                 name="Small",
-                fontName="Helvetica",
+                fontName="Titillium",
                 fontSize=7,
                 leading=9,
                 alignment=0
@@ -123,18 +126,17 @@ class LabelPrinter:
         """
         # Grundeinstellungen
         c = canvas.Canvas(self.file_path + file_name, pagesize=(100 * mm, 50 * mm))  # 100x50 mm
-        c.setFont("Helvetica", 10)
-
+       
         # Y-Koordinate von oben nach unten
         y = 45 * mm  
 
         # Logo links oben
         self.draw_logo(c, 5 * mm, 41 * mm)
-        c.setFont("Helvetica", 10)
+        c.setFont("Titillium", 10)
 
         # Chargennummer rechts neben Logo
         nummer = invoice.name.removeprefix("RG")
-        c.drawString(50 * mm, y - 2 * mm, f"Chargennummer   {nummer}")
+        c.drawString(55 * mm, y - 2 * mm, f"Chargennummer   {nummer}")
 
         # Bezeichnung (zentriert in Box)
         y -= 28 * mm
@@ -147,16 +149,17 @@ class LabelPrinter:
 
         # Artikelnummer
         # y += 1 * mm
-        c.drawString(5 * mm, y, f"Artikelnummer   {component.default_code}")
+        c.setFont("Titillium", 20)
+        c.drawString(35 * mm, y, f"{component.default_code}")
+        c.setFont("Titillium", 10)
 
         # Menge und Datum
-        y -= 6 * mm
+        y -= 8 * mm
         c.drawString(5 * mm, y, f"Stück   {int(component.quantity)}")
-        c.drawString(35 * mm, y, f"Rechnung vom {invoice.date}")
 
         # QR-Code
         qr_img = self.generate_qr_code(component.default_code + "-" + invoice.name)
-        c.drawImage(qr_img, 80 * mm, y - 7 * mm, width=16 * mm, height=16 * mm)
+        c.drawImage(qr_img, 80 * mm, y - 7 * mm, width=18 * mm, height=18 * mm)
 
         # Lieferant nebeneinander
         y -= 6 * mm
@@ -171,14 +174,12 @@ class LabelPrinter:
         """
         # Grundeinstellungen
         c = canvas.Canvas(self.file_path + file_name, pagesize=(100 * mm, 50 * mm))  # 100x50 mm
-        c.setFont("Helvetica", 10)
 
         # Y-Koordinate von oben nach unten
         y = 45 * mm  
 
         # Logo links oben
-        self.draw_logo(c, 92 * mm, 48 * mm, rotation=-90)
-        c.setFont("Helvetica", 10)
+        self.draw_logo(c, 91 * mm, 48 * mm, rotation=-90)
 
         # Bezeichnung (zentriert in Box)
         y -= 20 * mm
@@ -190,18 +191,21 @@ class LabelPrinter:
         )
 
         # Symbol-Einstellungen
-        width_symbol = 13
-        heigth_symbol = 8
+        width_symbol = 15
+        heigth_symbol = 9
         x_symbol = 21 * mm
 
         # REF
         c.drawImage(self.ref_image, 4 * mm, y, width=width_symbol, height=heigth_symbol, preserveAspectRatio=True, mask='auto')
-        c.drawString(10 * mm, y + 0.5 * mm, f"{product.default_code}")
-
+        c.setFont("Titillium", 20)
+        c.drawString(25 * mm, y - 0.5 * mm, f"{product.default_code}")
+        c.setFont("Titillium", 7)
+        
         # UDI
-        y -= 6 * mm
-        c.drawImage(self.udi_image, x_symbol, y, width=width_symbol, height=heigth_symbol, preserveAspectRatio=True, mask='auto')
-        c.drawString(x_symbol + 6 * mm, y + 0.5 * mm, f"{product.udi}")
+        y -= 8 * mm
+        if product.udi:
+            c.drawImage(self.udi_image, x_symbol, y, width=width_symbol, height=heigth_symbol, preserveAspectRatio=True, mask='auto')
+            c.drawString(x_symbol + 6 * mm, y + 0.5 * mm, f"{product.udi}")
 
         # LOT
         y -= 5 * mm
@@ -210,30 +214,45 @@ class LabelPrinter:
 
         # QR-Code
         x_qr = 3 * mm
-        qr_string = "(01)" + product.udi + "(10)" + product.lot_producing_id[1]
+        production_date = datetime.strptime(product.date_start, "%Y-%m-%d").strftime("%Y/%m") if getattr(product, "date_start", None) else ""
+        qr_string = (
+            (f"(01){product.udi}" if getattr(product, "udi", None) else "") +
+            (f"(10){product.lot_producing_id[1]}" if getattr(product, "lot_producing_id", None) else "") +
+            (f"(11){production_date}" if production_date != "" else "")
+        ) or "NO DATA"
+
         qr_img = self.generate_qr_code(qr_string)
         c.drawImage(qr_img, x_qr, y - 7 * mm, width=16 * mm, height=16 * mm)
         c.drawString(x_qr, y - 10 * mm, f"{qr_string}")
 
         # MD, Instruction, single patient, CE, production date
         y -= 5 * mm
-        c.drawImage(self.md_image, x_symbol, y, width=width_symbol, height=heigth_symbol, preserveAspectRatio=True, mask='auto')
-        c.drawImage(self.instruction_image, x_symbol + 6 * mm, y - 0.5 * mm, width=11, height=11, preserveAspectRatio=True, mask='auto')
-        c.drawImage(self.single_patient_image, x_symbol + 11 * mm, y - 0.5 * mm, width=11, height=11, preserveAspectRatio=True, mask='auto')
-        c.drawImage(self.ce_image, x_symbol + 16 * mm, y, width=10, height=10, preserveAspectRatio=True, mask='auto')
-        c.drawImage(self.production_date_image, x_symbol + 21.5 * mm, y + 0.5 * mm, width=8, height=8, preserveAspectRatio=True, mask='auto')
-        c.setFont("Helvetica", 3)
-        c.drawString(x_symbol + 21 * mm, y - 0.5 * mm, datetime.strptime(product.date_start, "%Y-%m-%d").strftime("%y-%m-%d"))
+        x_symbol_row = 0
+        if product.medical_device:
+            c.drawImage(self.md_image, x_symbol, y, width=width_symbol, height=heigth_symbol, preserveAspectRatio=True, mask='auto')
+            x_symbol_row += 6 * mm
+        if product.user_manual:
+            c.drawImage(self.instruction_image, x_symbol + x_symbol_row, y - 0.5 * mm, width=11, height=11, preserveAspectRatio=True, mask='auto')
+            x_symbol_row += 5 * mm
+        if product.single_use:
+            c.drawImage(self.single_patient_image, x_symbol + x_symbol_row, y - 0.5 * mm, width=11, height=11, preserveAspectRatio=True, mask='auto')
+            x_symbol_row += 5 * mm
+        if product.ce:
+            c.drawImage(self.ce_image, x_symbol + x_symbol_row, y, width=10, height=10, preserveAspectRatio=True, mask='auto')
+            x_symbol_row += 6 * mm
+        c.drawImage(self.production_date_image, x_symbol + x_symbol_row, y + 1 * mm, width=8, height=8, preserveAspectRatio=True, mask='auto')
+        c.setFont("Titillium", 5)
+        c.drawString(x_symbol + x_symbol_row - 1 * mm, y - 0.5 * mm, datetime.strptime(product.date_start, "%Y-%m-%d").strftime("%y/%m"))
 
         # Kontaktdaten
-        x_contact = 65 * mm
-        y_contact = 23 * mm
-        c.setFont("Helvetica", 7)
+        x_contact = 70 * mm
+        y_contact = 14 * mm
+        c.setFont("Titillium", 7)
         c.drawString(x_contact, y_contact, "CHW-Technik GmbH")
         c.drawString(x_contact, y_contact - 3 * mm, "Kolligsbrunnen 1")
         c.drawString(x_contact, y_contact - 6 * mm, "37115 Duderstadt")
-        c.drawString(x_contact, y_contact - 9 * mm, "c.wagner@chw-technik.de")
-        c.drawString(x_contact, y_contact - 12 * mm, "+49 5527 99896-9")
+        c.drawString(x_contact, y_contact - 9 * mm, "Tel.: +49 (0)5527 99896-9")
+        c.drawString(x_contact, y_contact - 12 * mm, "Fax: +49 (0)5527 99896-7")
         
         # Speichern
         c.save()
@@ -261,13 +280,13 @@ class LabelPrinter:
             c.rotate(rotation)
 
         # Logo und Text zeichnen (jetzt relativ zum Ursprung x=0,y=0)
-        c.drawImage(self.logo, 0, 0, width=7 * mm, height=7 * mm, preserveAspectRatio=True)
+        c.drawImage(self.logo, 0, 0, width=8 * mm, height=8 * mm, preserveAspectRatio=True)
 
         # Text daneben
-        c.setFont("Helvetica", 7)
-        c.drawString(8 * mm, 3 * mm, "CHW-Technik")
-        c.setFont("Helvetica", 3)
-        c.drawString(8 * mm, 1 * mm, "OT-Produkte GmbH")
+        c.setFont("Titillium", 8)
+        c.drawString(9 * mm, 4 * mm, "CHW-Technik")
+        c.setFont("Titillium", 5)
+        c.drawString(9 * mm, 2 * mm, "OT-Produkte GmbH")
 
         # Zustand zurücksetzen
         c.restoreState()
@@ -282,8 +301,7 @@ class LabelPrinter:
 # ----------------------------------------------------------------------------
 # region QR
 # ----------------------------------------------------------------------------
-    @staticmethod
-    def generate_qr_pil(data: str, size: int = 150) -> Image.Image:
+    def generate_qr_pil(self,data: str, size: int = 150) -> Image.Image:
         """Erzeugt einen QR-Code als PIL-Image"""
         if not data:
             return None
