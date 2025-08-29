@@ -208,11 +208,11 @@ class LabelPrinter:
         # REF
         y -= 1 * mm
         c.drawImage(self.ref_image, 4 * mm, y, width=width_symbol, height=heigth_symbol, preserveAspectRatio=True, mask='auto')
-        # y -= 5 * mm
+        y -= 5 * mm
         self.draw_paragraph(
             c, product.default_code,
             x=5 * mm, y=y,
-            w=90 * mm, h=15 * mm,
+            w=80 * mm, h=15 * mm,
             style="header"
         )
         c.setFont("Titillium", 7)
@@ -226,7 +226,7 @@ class LabelPrinter:
         # LOT
         y -= 5 * mm
         c.drawImage(self.lot_image, x_symbol, y, width=width_symbol, height=heigth_symbol, preserveAspectRatio=True, mask='auto')
-        c.drawString(x_symbol + 6 * mm, y + 1 * mm, f"{product.lot_producing_id[1]}")
+        c.drawString(x_symbol + 6 * mm, y + 0.5 * mm, f"{product.lot_producing_id[1]}")
 
         # QR-Code
         x_qr = 3 * mm
@@ -246,7 +246,7 @@ class LabelPrinter:
         x_symbol_row = 0
         if product.medical_device:
             c.drawImage(self.md_image, x_symbol, y, width=width_symbol, height=heigth_symbol, preserveAspectRatio=True, mask='auto')
-            x_symbol_row += 6 * mm
+            x_symbol_row += 7 * mm
         if product.user_manual:
             c.drawImage(self.instruction_image, x_symbol + x_symbol_row, y - 0.5 * mm, width=11, height=11, preserveAspectRatio=True, mask='auto')
             x_symbol_row += 5 * mm
@@ -255,11 +255,11 @@ class LabelPrinter:
             x_symbol_row += 5 * mm
         if product.ce:
             c.drawImage(self.ce_image, x_symbol + x_symbol_row, y, width=10, height=10, preserveAspectRatio=True, mask='auto')
-            x_symbol_row += 7 * mm
+            x_symbol_row += 5 * mm
         c.drawImage(self.production_date_image, x_symbol + x_symbol_row + 2 * mm, y + 1 * mm, width=8, height=8, preserveAspectRatio=True, mask='auto')
         c.setFont("Titillium", 5)
         c.drawString(x_symbol + x_symbol_row, y - 0.5 * mm, datetime.strptime(product.date_start, "%Y-%m-%d").strftime("%Y/%m"))
-        x_symbol_row += 7 * mm
+        x_symbol_row += 8 * mm
 
         # Stückzahl
         if user_quantity.isdigit():
