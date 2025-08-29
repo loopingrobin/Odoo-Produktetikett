@@ -139,7 +139,7 @@ class LabelPrinter:
         c.drawString(56 * mm, y - 2 * mm, f"Chargennummer   {nummer}")
 
         # Bezeichnung (zentriert in Box)
-        y -= 28 * mm
+        y -= 30 * mm
         self.draw_paragraph(
             c, component.name,
             x=5 * mm, y=y,
@@ -148,7 +148,7 @@ class LabelPrinter:
         )
 
         # Artikelnummer
-        y -= 6 * mm
+        y -= 4 * mm
         # c.drawString(35 * mm, y, f"{component.default_code}")
         self.draw_paragraph(
             c, component.default_code,
@@ -172,7 +172,7 @@ class LabelPrinter:
         c.drawImage(qr_img, 80 * mm, y - 6 * mm, width=18 * mm, height=18 * mm)
 
         # Lieferant nebeneinander
-        y -= 6 * mm
+        y -= 5 * mm
         c.drawString(5 * mm, y, f"Lieferant   {order.partner_name}")
         
         # Speichern
@@ -207,8 +207,8 @@ class LabelPrinter:
 
         # REF
         y -= 1 * mm
-        c.drawImage(self.ref_image, 0, y, width=width_symbol, height=heigth_symbol, preserveAspectRatio=True, mask='auto')
-        y -= 5 * mm
+        c.drawImage(self.ref_image, 4 * mm, y, width=width_symbol, height=heigth_symbol, preserveAspectRatio=True, mask='auto')
+        # y -= 5 * mm
         self.draw_paragraph(
             c, product.default_code,
             x=5 * mm, y=y,
@@ -239,7 +239,7 @@ class LabelPrinter:
 
         qr_img = self.generate_qr_code(qr_string)
         c.drawImage(qr_img, x_qr, y - 7 * mm, width=16 * mm, height=16 * mm)
-        c.drawString(x_qr, y - 10 * mm, f"{qr_string}")
+        c.drawString(x_qr + 1 * mm, y - 10 * mm, f"{qr_string}")
 
         # MD, Instruction, single patient, CE, production date
         y -= 5 * mm
@@ -256,9 +256,9 @@ class LabelPrinter:
         if product.ce:
             c.drawImage(self.ce_image, x_symbol + x_symbol_row, y, width=10, height=10, preserveAspectRatio=True, mask='auto')
             x_symbol_row += 7 * mm
-        c.drawImage(self.production_date_image, x_symbol + x_symbol_row, y + 1 * mm, width=8, height=8, preserveAspectRatio=True, mask='auto')
+        c.drawImage(self.production_date_image, x_symbol + x_symbol_row + 2 * mm, y + 1 * mm, width=8, height=8, preserveAspectRatio=True, mask='auto')
         c.setFont("Titillium", 5)
-        c.drawString(x_symbol + x_symbol_row - 2 * mm, y - 0.5 * mm, datetime.strptime(product.date_start, "%Y-%m-%d").strftime("%Y/%m"))
+        c.drawString(x_symbol + x_symbol_row, y - 0.5 * mm, datetime.strptime(product.date_start, "%Y-%m-%d").strftime("%Y/%m"))
         x_symbol_row += 7 * mm
 
         # Stückzahl
