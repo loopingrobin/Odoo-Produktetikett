@@ -131,12 +131,12 @@ class LabelPrinter:
         y = 45 * mm  
 
         # Logo links oben
-        self.draw_logo(c, 5 * mm, 41 * mm)
+        self.draw_logo(c, 4 * mm, 39 * mm)
         c.setFont("Titillium", 10)
 
         # Chargennummer rechts neben Logo
         nummer = invoice.name.removeprefix("RG")
-        c.drawString(55 * mm, y - 2 * mm, f"Chargennummer   {nummer}")
+        c.drawString(56 * mm, y - 2 * mm, f"Chargennummer   {nummer}")
 
         # Bezeichnung (zentriert in Box)
         y -= 28 * mm
@@ -158,7 +158,7 @@ class LabelPrinter:
         )
 
         # Menge
-        y -= 2 * mm
+        y -= 3 * mm
         if user_quantity.isdigit():
             c.setFont("Titillium", 7)
             quantity_sting = f"Stück {user_quantity} / {int(getattr(component, 'quantity', 0) or 0)}"
@@ -169,7 +169,7 @@ class LabelPrinter:
 
         # QR-Code
         qr_img = self.generate_qr_code(component.default_code + "-" + invoice.name)
-        c.drawImage(qr_img, 80 * mm, y - 7 * mm, width=18 * mm, height=18 * mm)
+        c.drawImage(qr_img, 80 * mm, y - 6 * mm, width=18 * mm, height=18 * mm)
 
         # Lieferant nebeneinander
         y -= 6 * mm
@@ -207,7 +207,7 @@ class LabelPrinter:
 
         # REF
         y -= 1 * mm
-        c.drawImage(self.ref_image, 4 * mm, y, width=width_symbol, height=heigth_symbol, preserveAspectRatio=True, mask='auto')
+        c.drawImage(self.ref_image, 0, y, width=width_symbol, height=heigth_symbol, preserveAspectRatio=True, mask='auto')
         y -= 5 * mm
         self.draw_paragraph(
             c, product.default_code,
