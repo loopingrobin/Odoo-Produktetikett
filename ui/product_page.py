@@ -100,6 +100,8 @@ class ProductPage(ttk.Frame):
 
         # Linke Spalte
         left_frame = ttk.Frame(container)
+        left_frame.config(height=500)
+        left_frame.pack_propagate(False)
         left_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
 
         # Frame für die Controls
@@ -146,7 +148,8 @@ class ProductPage(ttk.Frame):
         self.tree = ttk.Treeview(
             left_frame,
             columns=("reference1", "reference2", "designation", "total"),
-            show="headings"
+            show="headings",
+            height=20
         )
 
         # Spaltenbreite in Pixeln definieren (stretch=True erlaubt Anpassung durch Benutzer)
@@ -162,6 +165,7 @@ class ProductPage(ttk.Frame):
         # Anzeige der Anzahl der geladenen Einträge
         self.entries_tree = ttk.Label(left_frame, text="0 Einträge")
         self.entries_tree.pack(fill="both", expand=True)
+
         # Rechte Spalte
         right_frame = ttk.Frame(container)
         right_frame.grid(row=0, column=1, sticky="nsew")
@@ -193,11 +197,13 @@ class ProductPage(ttk.Frame):
 
         # QR-Code rechts von der Überschrift
         self.qr_label = ttk.Label(preview_frame)
-        self.qr_label.grid(row=0, column=1, rowspan=2, padx=10, sticky="n")
+        self.qr_label.grid(row=1, column=1, rowspan=2, padx=10, sticky="n")
 
         # Etikett-Vorschau (Textfeld)
-        self.label_preview = tk.Text(preview_frame, height=10, wrap="word")
-        self.label_preview.grid(row=1, column=0, sticky="nsew", pady=(5, 0))
+        self.name_preview = tk.Text(preview_frame, height=4, wrap="word")
+        self.name_preview.grid(row=1, column=0, sticky="nsew", pady=(5, 0))
+        self.label_preview = tk.Text(preview_frame, height=8, wrap="word")
+        self.label_preview.grid(row=2, column=0, sticky="nsew", pady=(5, 0))
 
         # Grid-Konfiguration für saubere Größenanpassung
         preview_frame.columnconfigure(0, weight=1)   # Textfeld dehnt sich
@@ -396,15 +402,17 @@ class ProductPage(ttk.Frame):
         """
         Läd die Einzelteildaten in die Etikettenvorschau.
         """
+        name_preview = ""
+
         preview = ""
 
         mode = self.mode_var.get()
         # Auftragsetikett
         if mode == "Auftragsetikett" and self.product:
             invoices = getattr(self.product, "invoices", [])
+            name_preview = getattr(self.component, 'name', 'Unbekannt')
             preview = (
                 f"Chargennummer: {invoices[0].name if invoices else 'Keine Rechnung'}\n"
-                f"Bezeichnung: {getattr(self.component, 'name', 'Unbekannt')}\n"
                 f"Artikelnummer: {getattr(self.component, 'default_code', '')}\n"
                 f"Menge: {getattr(self.component, 'quantity', 0)}\n"
                 f"Lieferant: {getattr(self.product, 'partner_name', 'Unbekannt')}\n"
@@ -413,10 +421,9 @@ class ProductPage(ttk.Frame):
 
         # Produktetikett
         elif mode == "Produktetikett" and self.product:
+            name_preview = getattr(self.product, 'name', 'Unbekannt')
             preview = (
-                f"Produkt: {getattr(self.product, 'name', 'Unbekannt')}\n"
                 f"Referenz: {getattr(self.product, 'default_code', '')}\n"
-                # f"LOT: {getattr(self.product, 'lot_production_id', ['', ''])[1]}\n"
                 f"LOT: {getattr(self.product, 'lot_producing_id', ['', ''])[1]}\n"
                 f"UDI: {getattr(self.product, 'udi', '')}\n"
                 f"CE-Kennzeichnung: {'Ja' if getattr(self.product, 'ce', False) else 'Nein'}\n"
@@ -426,6 +433,8 @@ class ProductPage(ttk.Frame):
             )
 
         # Text anzeigen.
+        self.name_preview.delete("1.0", tk.END)
+        self.name_preview.insert("1.0", name_preview)
         self.label_preview.delete("1.0", tk.END)
         self.label_preview.insert("1.0", preview)
 
@@ -484,8 +493,11 @@ class ProductPage(ttk.Frame):
                 file_name = self.sanitize_filename(f"{default_code}_{chargenr}_{timestamp}.pdf")
                 
                 current_qty = self.current_qty_var.get().strip()
+                edited_name = self.name_preview.get("1.0", "end-1c").strip()
+                if not edited_name:
+                    edited_name = getattr(self.product, "name", "Unbekannt")
                 self.label_printer.create_order_label_pdf(
-                    file_name, self.product, self.component, invoice, current_qty
+                    file_name, self.product, self.component, invoice, current_qty, edited_name
                 )
             else:
                 messagebox.showinfo("Fehlende Daten", "Keine Rechnung vorhanden, bitte Datensatz mit Rechnung auswählen!")
@@ -503,7 +515,10 @@ class ProductPage(ttk.Frame):
             file_name = self.sanitize_filename(f"{default_code}_{lot}_{timestamp}.pdf")
 
             current_qty = self.current_qty_var.get().strip()
-            self.label_printer.create_product_label_pdf(file_name, self.product, current_qty)
+            edited_name = self.name_preview.get("1.0", "end-1c").strip()
+            if not edited_name:
+                edited_name = getattr(self.product, "name", "Unbekannt")
+            self.label_printer.create_product_label_pdf(file_name, self.product, current_qty, edited_name)
 
         self.label_printer.send_pdf_to_printnode(file_name)
 

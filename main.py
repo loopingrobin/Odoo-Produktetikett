@@ -4,7 +4,7 @@
 from ui.app import EtikettApp
 
 # Globale App-Version
-APP_VERSION = "v1.0.11"
+APP_VERSION = "v1.0.12"
 
 if __name__ == "__main__":
     app = EtikettApp(app_version=APP_VERSION)

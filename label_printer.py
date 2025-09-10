@@ -120,7 +120,7 @@ class LabelPrinter:
 
         c.save()
 # ----------------------------------------------------------------------------
-    def create_order_label_pdf(self, file_name: str, order: PurchaseOrder, component: PurchaseOrderLine, invoice: Invoice, user_quantity: int):
+    def create_order_label_pdf(self, file_name: str, order: PurchaseOrder, component: PurchaseOrderLine, invoice: Invoice, user_quantity: int, edited_name: str = None):
         """
         Erstellt das Auftragsetikett und speichert es als PDF.
         """
@@ -140,8 +140,9 @@ class LabelPrinter:
 
         # Bezeichnung (zentriert in Box)
         y -= 30 * mm
+        name_to_print = edited_name or component.name
         self.draw_paragraph(
-            c, component.name,
+            c, name_to_print,
             x=5 * mm, y=y,
             w=90 * mm, h=30 * mm,
             style="header"
@@ -178,7 +179,7 @@ class LabelPrinter:
         # Speichern
         c.save()
 # ----------------------------------------------------------------------------
-    def create_product_label_pdf(self, file_name: str, product: ManufacturingOrder, user_quantity: int):
+    def create_product_label_pdf(self, file_name: str, product: ManufacturingOrder, user_quantity: int, edited_name: str = None):
         """
         Erstellt das Auftragsetikett und speichert es als PDF.
         """
@@ -193,8 +194,9 @@ class LabelPrinter:
 
         # Bezeichnung (zentriert in Box)
         y -= 20 * mm
+        name_to_print = edited_name or product.name
         self.draw_paragraph(
-            c, product.name,
+            c, name_to_print,
             x=5 * mm, y=y,
             w=80 * mm, h=30 * mm,
             style="header"
