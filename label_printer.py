@@ -1,5 +1,6 @@
 # label_printer.py
 from datetime import datetime
+import io
 import requests
 import base64
 from reportlab.lib.units import mm
@@ -20,8 +21,9 @@ class LabelPrinter:
 # ----------------------------------------------------------------------------
     def __init__(self, api_key="", printer_id=""):
         self.api_key = api_key
-        self.printer_id = printer_id if printer_id != "" else "74652188"
+        self.printer_id = printer_id
         self.isConnected: bool = False
+        # TODO: Filepath für die gespeicherten PDFs über die Einstellungen individualisierbar machen und beim Start laden.
         self.file_path: str = ''
         self.logo = ImageReader("label_pictures\\Logo_CHW.png")
         self.ref_image = ImageReader("label_pictures\\REF.png")
@@ -120,13 +122,44 @@ class LabelPrinter:
 
         c.save()
 # ----------------------------------------------------------------------------
-    def create_order_label_pdf(self, file_name: str, order: PurchaseOrder, component: PurchaseOrderLine, invoice: Invoice, user_quantity: int, edited_name: str = None):
+    def create_order_label_pdf(
+        self, 
+        order: PurchaseOrder, 
+        component: PurchaseOrderLine, 
+        invoice: Invoice, 
+        user_quantity: int | None = None, 
+        edited_name: str | None = None
+    ) -> bytes:
         """
-        Erstellt das Auftragsetikett und speichert es als PDF.
+        Erzeugt ein Auftragsetikett (Bestellposition) als PDF im Speicher
+        und gibt es als Bytes zurück.
+
+        Parameter
+        ---------
+        order : PurchaseOrder
+            Die zugehörige Bestellung (z. B. Lieferant, Datum).
+
+        component : PurchaseOrderLine
+            Die gewählte Bestellposition mit Artikelnummer, Name und Menge.
+
+        invoice : Invoice
+            Die Rechnung, u. a. für die Chargennummer.
+
+        user_quantity : int | None
+            Optional vom Anwender eingegebene Menge. Wird nur angezeigt, wenn vorhanden.
+
+        edited_name : str | None
+            Optional vom Anwender veränderter Produktname.
+
+        Rückgabe
+        --------
+        bytes
+            Das fertige PDF-Dokument im Speicher.
         """
-        # Grundeinstellungen
-        c = canvas.Canvas(self.file_path + file_name, pagesize=(100 * mm, 50 * mm))  # 100x50 mm
-       
+        buffer = io.BytesIO()
+        c = canvas.Canvas(buffer, pagesize=(100*mm, 50*mm))
+
+        # --- PDF Inhalt zeichnen ---
         # Y-Koordinate von oben nach unten
         y = 45 * mm  
 
@@ -178,14 +211,42 @@ class LabelPrinter:
         
         # Speichern
         c.save()
-# ----------------------------------------------------------------------------
-    def create_product_label_pdf(self, file_name: str, product: ManufacturingOrder, user_quantity: int, edited_name: str = None):
-        """
-        Erstellt das Auftragsetikett und speichert es als PDF.
-        """
-        # Grundeinstellungen
-        c = canvas.Canvas(self.file_path + file_name, pagesize=(100 * mm, 50 * mm))  # 100x50 mm
 
+        pdf_bytes = buffer.getvalue()
+        buffer.close()
+
+        return pdf_bytes
+# ----------------------------------------------------------------------------
+    def create_product_label_pdf(
+        self, 
+        product: ManufacturingOrder, 
+        user_quantity: int | None = None, 
+        edited_name: str | None = None
+    ) -> bytes:
+        """
+        Erzeugt ein Produktetikett als PDF im Speicher und gibt es als Bytes zurück.
+
+        Parameter
+        ---------
+        product : ManufacturingOrder
+            Das Produkt, für das das Etikett erstellt wird (z. B. Artikelnummer, LOT, UDI).
+        
+        user_quantity : int | None
+            Vom Anwender eingegebene Menge für "Stück X / Gesamt".
+            Wird nur gedruckt, wenn ein Wert vorliegt.
+        
+        edited_name : str | None
+            Optional geänderter Produktname. Falls None, wird der Standardname verwendet.
+
+        Rückgabe
+        --------
+        bytes
+            Das fertige PDF-Dokument im Speicher.
+        """
+        buffer = io.BytesIO()
+        c = canvas.Canvas(buffer, pagesize=(100*mm, 50*mm))
+
+        # --- PDF Inhalt zeichnen ---
         # Y-Koordinate von oben nach unten
         y = 45 * mm  
 
@@ -280,6 +341,11 @@ class LabelPrinter:
         
         # Speichern
         c.save()
+
+        pdf_bytes = buffer.getvalue()
+        buffer.close()
+
+        return pdf_bytes
 # ----------------------------------------------------------------------------
 # endregion
 # ----------------------------------------------------------------------------
@@ -366,6 +432,30 @@ class LabelPrinter:
 # ----------------------------------------------------------------------------
 # region PrintNode
 # ----------------------------------------------------------------------------
+    def get_printers(self) -> list[dict]:
+        """
+        Gibt eine Liste der verfügbaren Drucker mit ID und Namen zurück.
+        """
+        # url = f"{self.base_url}/printers"
+        # response = requests.get(url, headers=self.headers)
+        response = requests.get(
+            "https://api.printnode.com/printers",
+            auth=(self.api_key, '')
+        )
+        response.raise_for_status()  # Fehler werfen, falls HTTP-Fehler
+
+        printers = response.json()
+        return [
+            {
+                "id": p.get("id"),
+                "name": p.get("name"),
+                "description": p.get("description"),
+                "computer": p.get("computer", {}).get("name")
+            }
+            for p in printers
+        ]
+
+# ----------------------------------------------------------------------------
     def send_zpl_to_printnode(self, zpl_string):
         """
         Sendet ein ZPL an PrintNode über die API.
@@ -386,12 +476,11 @@ class LabelPrinter:
                 
         return response.ok
 # ----------------------------------------------------------------------------
-    def send_pdf_to_printnode(self, file_name, title="Etikett"):
+    def send_pdf_to_printnode(self, pdf_bytes, title="Etikett"):
         """
         Sendet ein PDF an PrintNode über die API.
         """
-        with open(self.file_path + file_name, "rb") as f:
-            pdf_b64 = base64.b64encode(f.read()).decode()
+        pdf_b64 = base64.b64encode(pdf_bytes).decode()
 
         response = requests.post(
             "https://api.printnode.com/printjobs",

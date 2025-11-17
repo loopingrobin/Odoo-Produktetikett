@@ -11,7 +11,7 @@ class EtikettApp(tk.Tk):
         super().__init__()
 
         self.title("Etikettendrucker")
-        self.geometry("1000x600")
+        self.geometry("1000x630")
 
         self.app_version = app_version
         self.odoo_client = OdooClient()
