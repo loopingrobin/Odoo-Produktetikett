@@ -72,8 +72,14 @@ class ProductPage(ttk.Frame):
         self.component = None
         self.mode_var = tk.StringVar(value="Produktetikett")
         self.limit_var = tk.StringVar(value=20)
+        # TODO: Die Druckerauswahl speichern und beim Start laden.
+        self.printer_var = tk.StringVar()
+        self.printer_map = {}  # Name -> ID
+        # TODO: Die 'PDF speichern'-Auswahl speichern und beim Start laden.
+        self.save_pdf_var = tk.BooleanVar(value=False)
 
         self.build_ui()
+        self.load_printers()
         # self.winfo_toplevel().minsize(1000, 600)
 # ----------------------------------------------------------------------------
 # endregion
@@ -217,8 +223,46 @@ class ProductPage(ttk.Frame):
         self.current_qty_entry = ttk.Entry(right_frame, textvariable=self.current_qty_var)
         self.current_qty_entry.pack(anchor="w", pady=(0, 10))
 
+        # Druckerauswahl
+        printer_frame = ttk.Frame(right_frame)
+        printer_frame.pack(anchor="w", pady=(5, 10), fill="x")
+
+        # Label für Drucker
+        ttk.Label(printer_frame, text="Drucker:").grid(row=0, column=0, sticky="w")
+
+        # Dropdown
+        self.printer_select = ttk.Combobox(
+            printer_frame,
+            textvariable=self.printer_var,
+            state="readonly",
+            width=25
+        )
+        self.printer_select.grid(row=1, column=0, padx=(0, 10), sticky="w")
+
+        # Checkbutton "PDF speichern"
+        self.save_pdf_check = ttk.Checkbutton(
+            printer_frame,
+            text="als PDF speichern",
+            variable=self.save_pdf_var
+        )
+        self.save_pdf_check.grid(row=1, column=1, sticky="w")
+
         # Button "Etiketten drucken".
-        ttk.Button(right_frame, text="Etikett drucken", command=self.print_label).pack(fill="x", pady=5)
+        ttk.Button(printer_frame, text="Etikett drucken", command=self.print_label).grid(row=1, column=2)
+# ----------------------------------------------------------------------------
+    def load_printers(self):
+        printers = self.label_printer.get_printers()  # deine API
+        names = []
+
+        self.printer_map.clear()
+        for printer in printers:
+            name = printer["name"]
+            self.printer_map[name] = printer["id"]
+            names.append(name)
+
+        self.printer_select["values"] = names
+        if names:
+            self.printer_var.set(names[0])  # Ersten Drucker standardmäßig auswählen
 # ----------------------------------------------------------------------------
 # endregion
 # ----------------------------------------------------------------------------
@@ -471,12 +515,24 @@ class ProductPage(ttk.Frame):
         """
         Erstellt das Label und sendet es an den Drucker.
         """
+        # Auswahl des Druckers wird geladen
+        selected_name = self.printer_var.get()
+        printer_id = self.printer_map.get(selected_name)
+
+        if not printer_id:
+            messagebox.showwarning("Kein Drucker", "Bitte einen Drucker auswählen!")
+            return
+        
+        self.label_printer.printer_id = printer_id
+        
+        # Auswahl des Modus wird geladen
         mode = self.mode_var.get()
 
         # Zeitstempel generieren (z. B. 20250827_153012)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
 
         file_name = "test.pdf"
+        pdf_data = ""
 
         # Auftragsetikett
         if mode == "Auftragsetikett" and self.product:
@@ -496,8 +552,8 @@ class ProductPage(ttk.Frame):
                 edited_name = self.name_preview.get("1.0", "end-1c").strip()
                 if not edited_name:
                     edited_name = getattr(self.product, "name", "Unbekannt")
-                self.label_printer.create_order_label_pdf(
-                    file_name, self.product, self.component, invoice, current_qty, edited_name
+                pdf_data = self.label_printer.create_order_label_pdf(
+                    self.product, self.component, invoice, current_qty, edited_name
                 )
             else:
                 messagebox.showinfo("Fehlende Daten", "Keine Rechnung vorhanden, bitte Datensatz mit Rechnung auswählen!")
@@ -518,12 +574,18 @@ class ProductPage(ttk.Frame):
             edited_name = self.name_preview.get("1.0", "end-1c").strip()
             if not edited_name:
                 edited_name = getattr(self.product, "name", "Unbekannt")
-            self.label_printer.create_product_label_pdf(file_name, self.product, current_qty, edited_name)
+            pdf_data = self.label_printer.create_product_label_pdf(self.product, current_qty, edited_name)
 
-        self.label_printer.send_pdf_to_printnode(file_name)
+        self.label_printer.send_pdf_to_printnode(pdf_data)
 
-        # Ausgabe
-        print(f"Etikett gespeichert als: {file_name}")
+        # Optional speichern
+        if self.save_pdf_var.get():
+            file_path = self.label_printer.file_path + file_name
+
+            with open(file_path, "wb") as pdf:
+                pdf.write(pdf_data)
+
+            print(f"Etikett gespeichert als: {file_path}")
 # ----------------------------------------------------------------------------
     def sanitize_filename(self, name: str) -> str:
         # Alles außer Buchstaben, Zahlen, Unterstrich und Bindestrich durch "_" ersetzen
