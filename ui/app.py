@@ -14,9 +14,22 @@ class EtikettApp(tk.Tk):
         self.geometry("1000x630")
 
         self.app_version = app_version
-        self.odoo_client = OdooClient()
-        self.label_printer = LabelPrinter()
         self.settings_manager = SettingsManager()
+        self.odoo_client = OdooClient()
+
+        # PrintNode + LabelPrinter initialisieren
+        printNode_settings = self.settings_manager.get_printnode_settings()
+
+        # LabelPrinter mit SettingsManager erstellen
+        self.label_printer = LabelPrinter(
+            api_key=printNode_settings.get("api_key", ""),
+            settings_manager=self.settings_manager
+        )
+
+        # Wenn Printer-ID gespeichert wurde, übernehmen:
+        printer_settings = self.settings_manager.get_printer_settings()
+        if printer_settings.get("last_printer_id"):
+            self.label_printer.printer_id = printer_settings["last_printer_id"]
 
         # Einstellungen laden und direkt setzen
         odoo_settings = self.settings_manager.get_odoo_settings()
@@ -42,7 +55,7 @@ class EtikettApp(tk.Tk):
                 parent, self, self.odoo_client, self.label_printer, self.settings_manager
             ),
             "Produktseite": lambda parent: ProductPage(
-                parent, self, self.odoo_client, self.label_printer
+                parent, self, self.odoo_client, self.label_printer, self.settings_manager
             )
         }
 

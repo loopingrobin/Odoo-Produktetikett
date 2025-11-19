@@ -59,12 +59,13 @@ class ProductPage(ttk.Frame):
 # ----------------------------------------------------------------------------
 # region Konstruktor
 # ----------------------------------------------------------------------------
-    def __init__(self, parent, app, odoo_client, label_printer):
+    def __init__(self, parent, app, odoo_client, label_printer, settings_manager):
         super().__init__(parent)
 
         self.app = app
         self.odoo_client = odoo_client
         self.label_printer = label_printer
+        self.settings_manager = settings_manager
 
         self.overview_data = None
         self.product = None
@@ -72,11 +73,21 @@ class ProductPage(ttk.Frame):
         self.component = None
         self.mode_var = tk.StringVar(value="Produktetikett")
         self.limit_var = tk.StringVar(value=20)
-        # TODO: Die Druckerauswahl speichern und beim Start laden.
-        self.printer_var = tk.StringVar()
+
+        # Letzte Druckerauswahl aus den Settings laden.
+        printer_settings = self.settings_manager.get_printer_settings()
+        last_id = printer_settings["last_printer_id"]
+
+        if last_id in self.printer_map.values():
+            name = [k for k, v in self.printer_map.items() if v == last_id][0]
+            self.printer_var.set(name)
+        else:
+            self.printer_var = tk.StringVar()
+
         self.printer_map = {}  # Name -> ID
-        # TODO: Die 'PDF speichern'-Auswahl speichern und beim Start laden.
-        self.save_pdf_var = tk.BooleanVar(value=False)
+
+        # Letzte 'PDF speichern'-Auswahl aus den Settings laden.
+        self.save_pdf_var.set(printer_settings["save_pdf"])
 
         self.build_ui()
         self.load_printers()
@@ -586,6 +597,12 @@ class ProductPage(ttk.Frame):
                 pdf.write(pdf_data)
 
             print(f"Etikett gespeichert als: {file_path}")
+
+        # Druckauswahl in den Settings speichern.
+        self.settings_manager.update_printer_settings(
+            printer_id,
+            self.save_pdf_var.get()
+        )
 # ----------------------------------------------------------------------------
     def sanitize_filename(self, name: str) -> str:
         # Alles außer Buchstaben, Zahlen, Unterstrich und Bindestrich durch "_" ersetzen
