@@ -19,12 +19,22 @@ class LabelPrinter:
 # ----------------------------------------------------------------------------
 # region Konstruktor
 # ----------------------------------------------------------------------------
-    def __init__(self, api_key="", printer_id=""):
+    def __init__(self, api_key="", settings_manager=None):
         self.api_key = api_key
-        self.printer_id = printer_id
+        self.printer_id = None
+        self.settings_manager = settings_manager
+
         self.isConnected: bool = False
-        # TODO: Filepath für die gespeicherten PDFs über die Einstellungen individualisierbar machen und beim Start laden.
-        self.file_path: str = ''
+
+        # PDF-Pfad aus den Settings laden
+        if settings_manager:
+            label_settings = settings_manager.get_label_settings()
+            self.file_path: str = label_settings.get("pdf_path", "")
+            self.address_lines = label_settings.get("address_lines", ["", "", "", "", ""])
+        else:
+            self.file_path = ""
+            self.address_lines = ["", "", "", "", ""]
+            
         self.logo = ImageReader("label_pictures\\Logo_CHW.png")
         self.ref_image = ImageReader("label_pictures\\REF.png")
         self.udi_image = ImageReader("label_pictures\\UDI.png")
@@ -333,11 +343,11 @@ class LabelPrinter:
         x_contact = 70 * mm
         y_contact = 14 * mm
         c.setFont("Titillium", 7)
-        c.drawString(x_contact, y_contact, "CHW-Technik GmbH")
-        c.drawString(x_contact, y_contact - 3 * mm, "Kolligsbrunnen 1")
-        c.drawString(x_contact, y_contact - 6 * mm, "37115 Duderstadt")
-        c.drawString(x_contact, y_contact - 9 * mm, "Tel.: +49 (0)5527 99896-9")
-        c.drawString(x_contact, y_contact - 12 * mm, "Fax: +49 (0)5527 99896-7")
+        c.drawString(x_contact, y_contact, self.address_lines[0])
+        c.drawString(x_contact, y_contact - 3 * mm, self.address_lines[1])
+        c.drawString(x_contact, y_contact - 6 * mm, self.address_lines[2])
+        c.drawString(x_contact, y_contact - 9 * mm, self.address_lines[3])
+        c.drawString(x_contact, y_contact - 12 * mm, self.address_lines[4])
         
         # Speichern
         c.save()
