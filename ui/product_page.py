@@ -78,15 +78,16 @@ class ProductPage(ttk.Frame):
         printer_settings = self.settings_manager.get_printer_settings()
         last_id = printer_settings["last_printer_id"]
 
+        self.printer_map = {}  # Name -> ID
+
         if last_id in self.printer_map.values():
             name = [k for k, v in self.printer_map.items() if v == last_id][0]
             self.printer_var.set(name)
         else:
             self.printer_var = tk.StringVar()
 
-        self.printer_map = {}  # Name -> ID
-
         # Letzte 'PDF speichern'-Auswahl aus den Settings laden.
+        self.save_pdf_var = tk.BooleanVar(value=False)
         self.save_pdf_var.set(printer_settings["save_pdf"])
 
         self.build_ui()
@@ -477,9 +478,18 @@ class ProductPage(ttk.Frame):
         # Produktetikett
         elif mode == "Produktetikett" and self.product:
             name_preview = getattr(self.product, 'name', 'Unbekannt')
+            lot = getattr(self.product, "lot_producing_id", None)
+
+            # LOT sicher extrahieren
+            if isinstance(lot, (list, tuple)) and len(lot) > 1:
+                lot_value = lot[1]
+            elif isinstance(lot, str):
+                lot_value = lot
+            else:
+                lot_value = "—"
             preview = (
                 f"Referenz: {getattr(self.product, 'default_code', '')}\n"
-                f"LOT: {getattr(self.product, 'lot_producing_id', ['', ''])[1]}\n"
+                f"LOT: {lot_value}\n"
                 f"UDI: {getattr(self.product, 'udi', '')}\n"
                 f"CE-Kennzeichnung: {'Ja' if getattr(self.product, 'ce', False) else 'Nein'}\n"
                 f"Gebrauchsanweisung: {'Ja' if getattr(self.product, 'user_manual', False) else 'Nein'}\n"
