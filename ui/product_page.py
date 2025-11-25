@@ -1,4 +1,5 @@
 from datetime import datetime
+import os
 import re
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -603,7 +604,9 @@ class ProductPage(ttk.Frame):
 
         # Optional speichern
         if self.save_pdf_var.get():
-            file_path = self.label_printer.file_path + file_name
+            os.makedirs(self.label_printer.file_path, exist_ok=True)
+
+            file_path = os.path.join(self.label_printer.file_path, file_name)
 
             with open(file_path, "wb") as pdf:
                 pdf.write(pdf_data)
