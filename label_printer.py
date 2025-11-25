@@ -19,10 +19,10 @@ class LabelPrinter:
 # ----------------------------------------------------------------------------
 # region Konstruktor
 # ----------------------------------------------------------------------------
-    def __init__(self, api_key="", settings_manager=None):
+    def __init__(self, api_key="", settings_manager=None, printer_id=""):
         self.api_key = api_key
-        self.printer_id = None
         self.settings_manager = settings_manager
+        self.printer_id = printer_id
 
         self.isConnected: bool = False
 
@@ -34,6 +34,8 @@ class LabelPrinter:
         else:
             self.file_path = ""
             self.address_lines = ["", "", "", "", ""]
+
+            settings_loaded = True
             
         self.logo = ImageReader("label_pictures\\Logo_CHW.png")
         self.ref_image = ImageReader("label_pictures\\REF.png")

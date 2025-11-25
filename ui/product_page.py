@@ -76,23 +76,29 @@ class ProductPage(ttk.Frame):
 
         # Letzte Druckerauswahl aus den Settings laden.
         printer_settings = self.settings_manager.get_printer_settings()
-        last_id = printer_settings["last_printer_id"]
-
-        self.printer_map = {}  # Name -> ID
-
-        if last_id in self.printer_map.values():
-            name = [k for k, v in self.printer_map.items() if v == last_id][0]
-            self.printer_var.set(name)
-        else:
-            self.printer_var = tk.StringVar()
 
         # Letzte 'PDF speichern'-Auswahl aus den Settings laden.
         self.save_pdf_var = tk.BooleanVar(value=False)
         self.save_pdf_var.set(printer_settings["save_pdf"])
 
-        self.build_ui()
+        # Zuletzt verwendeten Drucker aus Settings laden.
+        last_id = printer_settings["last_printer_id"]
+        
+        # Druckerliste aus PrintNode laden.
+        self.printer_map = {}  # Name -> ID
+        self.printer_names = []
+        self.printer_var = tk.StringVar()
         self.load_printers()
-        # self.winfo_toplevel().minsize(1000, 600)
+
+        # Zuletzt verwendeten Drucker für Dropdown auswählen.
+        if last_id in self.printer_map.values():
+            name = [k for k, v in self.printer_map.items() if v == last_id][0]
+            self.printer_var.set(name)
+        elif self.printer_names:
+            self.printer_var.set(self.printer_names[0])
+            
+        # Grafische Oberfläche laden.
+        self.build_ui()
 # ----------------------------------------------------------------------------
 # endregion
 # ----------------------------------------------------------------------------
@@ -250,6 +256,7 @@ class ProductPage(ttk.Frame):
             width=25
         )
         self.printer_select.grid(row=1, column=0, padx=(0, 10), sticky="w")
+        self.printer_select["values"] = self.printer_names
 
         # Checkbutton "PDF speichern"
         self.save_pdf_check = ttk.Checkbutton(
@@ -264,17 +271,12 @@ class ProductPage(ttk.Frame):
 # ----------------------------------------------------------------------------
     def load_printers(self):
         printers = self.label_printer.get_printers()  # deine API
-        names = []
 
         self.printer_map.clear()
         for printer in printers:
             name = printer["name"]
             self.printer_map[name] = printer["id"]
-            names.append(name)
-
-        self.printer_select["values"] = names
-        if names:
-            self.printer_var.set(names[0])  # Ersten Drucker standardmäßig auswählen
+            self.printer_names.append(name)
 # ----------------------------------------------------------------------------
 # endregion
 # ----------------------------------------------------------------------------

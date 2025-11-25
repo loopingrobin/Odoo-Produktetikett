@@ -15,31 +15,33 @@ class EtikettApp(tk.Tk):
 
         self.app_version = app_version
         self.settings_manager = SettingsManager()
-        self.odoo_client = OdooClient()
+
+        # Odoo Initialisierung
+        odoo_settings = self.settings_manager.get_odoo_settings()
+        
+        # Wenn alle Felder belegt → initialisieren
+        if all(odoo_settings.values()):
+            self.odoo_client = OdooClient(**odoo_settings)
+        else:
+            # Leere Version
+            self.odoo_client = OdooClient()
 
         # PrintNode + LabelPrinter initialisieren
         printNode_settings = self.settings_manager.get_printnode_settings()
+        printer_settings = self.settings_manager.get_printer_settings()
 
         # LabelPrinter mit SettingsManager erstellen
         self.label_printer = LabelPrinter(
-            api_key=printNode_settings.get("api_key", ""),
-            settings_manager=self.settings_manager
+            api_key = printNode_settings.get("api_key", ""),
+            settings_manager = self.settings_manager,
+            printer_id = printer_settings.get("last_printer_id", "")
         )
 
         # Wenn Printer-ID gespeichert wurde, übernehmen:
-        printer_settings = self.settings_manager.get_printer_settings()
         if printer_settings.get("last_printer_id"):
             self.label_printer.printer_id = printer_settings["last_printer_id"]
 
-        # Einstellungen laden und direkt setzen
-        odoo_settings = self.settings_manager.get_odoo_settings()
-        if all(odoo_settings.values()):
-            self.odoo_client = OdooClient(**odoo_settings)
-            
-        printNode_settings = self.settings_manager.get_printnode_settings()
-        if all(printNode_settings.values()):
-            self.label_printer = LabelPrinter(**printNode_settings)
-
+        # UI aufbauen
         # Menü
         self.create_menu()
 
