@@ -27,15 +27,7 @@ class LabelPrinter:
         self.isConnected: bool = False
 
         # PDF-Pfad aus den Settings laden
-        if settings_manager:
-            label_settings = settings_manager.get_label_settings()
-            self.file_path: str = label_settings.get("pdf_path", "")
-            self.address_lines = label_settings.get("address_lines", ["", "", "", "", ""])
-        else:
-            self.file_path = ""
-            self.address_lines = ["", "", "", "", ""]
-
-            settings_loaded = True
+        self.load_settings()
             
         self.logo = ImageReader("label_pictures\\Logo_CHW.png")
         self.ref_image = ImageReader("label_pictures\\REF.png")
@@ -92,6 +84,15 @@ class LabelPrinter:
                 return False, f"Fehler: Status {response.status_code}"
         except requests.exceptions.RequestException as e:
             return False, f"Verbindungsfehler: {e}"
+# ----------------------------------------------------------------------------
+    def load_settings(self):
+        if self.settings_manager:
+            label_settings = self.settings_manager.get_label_settings()
+            self.file_path: str = label_settings.get("pdf_path", "")
+            self.address_lines = label_settings.get("address_lines", ["", "", "", "", ""])
+        else:
+            self.file_path = ""
+            self.address_lines = ["", "", "", "", ""]
 # ----------------------------------------------------------------------------
 # endregion
 # ----------------------------------------------------------------------------
