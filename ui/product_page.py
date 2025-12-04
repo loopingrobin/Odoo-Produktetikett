@@ -6,6 +6,8 @@ from tkinter import ttk, messagebox
 from PIL import ImageTk
 import threading
 
+from odoo_client import Invoice
+
 class LoadingPopup(tk.Toplevel):
     def __init__(self, parent, message="Lade Daten...", on_cancel=None):
         super().__init__(parent)
@@ -74,6 +76,14 @@ class ProductPage(ttk.Frame):
         self.component = None
         self.mode_var = tk.StringVar(value="Produktetikett")
         self.limit_var = tk.StringVar(value=20)
+
+        # Eingabe Chargennummer bei fehlender Rechnung
+        self.chargennr_var = tk.StringVar()
+
+        # Default: 80 + Jahr zweistellig + 000
+        year_short = datetime.now().strftime("%y")
+        default_charge = f"80{year_short}000"
+        self.chargennr_var.set(default_charge)
 
         # Letzte Druckerauswahl aus den Settings laden.
         printer_settings = self.settings_manager.get_printer_settings()
@@ -235,12 +245,25 @@ class ProductPage(ttk.Frame):
         preview_frame.columnconfigure(1, weight=0)   # QR-Code behält feste Größe
 
 
-        # Stückzahl
+        # Stückzahl und Chargennummer
+        number_frame = ttk.Frame(right_frame)
+        number_frame.pack(anchor="w", pady=(5, 10), fill="x")
+
         # Eingabefeld für aktuelle Stückzahl
-        ttk.Label(right_frame, text="Aktuelle Stückzahl:").pack(anchor="w", pady=(5, 2))
+        ttk.Label(number_frame, text="Aktuelle Stückzahl:").grid(row=0, column=0, sticky="w")
         self.current_qty_var = tk.StringVar()   # StringVar, damit Eingabe leer bleiben kann
-        self.current_qty_entry = ttk.Entry(right_frame, textvariable=self.current_qty_var)
-        self.current_qty_entry.pack(anchor="w", pady=(0, 10))
+        self.current_qty_entry = ttk.Entry(number_frame, textvariable=self.current_qty_var)
+        self.current_qty_entry.grid(row=1, column=0, padx=(0, 10), sticky="w")
+
+        # Eingabefeld für manuelle Chargennummer
+        self.chargennr_label = ttk.Label(number_frame, text="Chargennummer (manuell):")
+        self.chargennr_label.grid(row=0, column=1, sticky="w")
+
+        self.chargennr_entry = ttk.Entry(number_frame, textvariable=self.chargennr_var)
+        self.chargennr_entry.grid(row=1, column=1, sticky="w")
+
+        self.hide_charge_field()
+
 
         # Druckerauswahl
         printer_frame = ttk.Frame(right_frame)
@@ -334,6 +357,18 @@ class ProductPage(ttk.Frame):
 
             self.tree_products.event_generate("<<TreeviewSelect>>")
 
+            # Prüfung, ob Feld für Chargennummer sichtbar sein muss.
+            if mode == "Auftragsetikett":
+                if self.product.invoices:
+                    # Rechnung vorhanden → Eingabefeld ausblenden
+                    self.hide_charge_field()
+                else:
+                    # Keine Rechnung → Eingabefeld anzeigen
+                    self.show_charge_field()
+            else:
+                # Andere Modi (z. B. Produktetikett)
+                self.hide_charge_field()
+
         except Exception as e:
             messagebox.showerror("Fehler", f"Produkte konnten nicht geladen werden:\n{str(e)}")
 # ----------------------------------------------------------------------------
@@ -421,6 +456,18 @@ class ProductPage(ttk.Frame):
                 )
 
         self.tree.event_generate("<<TreeviewSelect>>")
+# ----------------------------------------------------------------------------
+    def hide_charge_field(self):
+        """ Versteckt Label und Eingabefeld für die manuelle Chargennummer """
+        self.chargennr_label.grid_remove()
+        self.chargennr_entry.grid_remove()
+# ----------------------------------------------------------------------------
+    def show_charge_field(self):
+        """
+        Lässt Label und Eingabefeld für die manuelle Chargennummer erscheinen
+        """
+        self.chargennr_label.grid()
+        self.chargennr_entry.grid()
 # ----------------------------------------------------------------------------
 # endregion
 # ----------------------------------------------------------------------------
@@ -551,8 +598,6 @@ class ProductPage(ttk.Frame):
         
         # Auswahl des Modus wird geladen
         mode = self.mode_var.get()
-
-        # Zeitstempel generieren (z. B. 20250827_153012)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
 
         file_name = "test.pdf"
@@ -560,27 +605,55 @@ class ProductPage(ttk.Frame):
 
         # Auftragsetikett
         if mode == "Auftragsetikett" and self.product:
+            
+            # ==========================
+            # FALL 1: Rechnung vorhanden
+            # ==========================
             if self.product.invoices:
                 invoice = self.product.invoices[0]
 
                 # Chargennummer ohne "RG"
                 chargenr = invoice.name.removeprefix("RG") if invoice.name else "NOCHARGE"
 
-                # Default Code sauber machen (nur Buchstaben/Zahlen)
-                default_code = getattr(self.component, "default_code", "NODEFAULT")
-                # default_code = re.sub(r"[^A-Za-z0-9_-]", "_", default_code)
+            # ==========================================
+            # FALL 2: KEINE Rechnung → manuelle Eingabe!
+            # ==========================================
+            else:   
+                # Benutzer-Eingabe lesen
+                chargenr = self.chargennr_var.get().strip()
 
-                file_name = self.sanitize_filename(f"{default_code}_{chargenr}_{timestamp}.pdf")
+                if not chargenr:
+                    messagebox.showinfo("Fehler", "Bitte eine Chargennummer eingeben!")
+                    return
+
+                # künstliche Invoice erzeugen (damit der alte Code weiterläuft)
+                invoice = Invoice(
+                    id=0,
+                    name=f"{chargenr}",
+                    date=None,
+                    total=0.0,
+                    state="manual"
+                )   
                 
-                current_qty = self.current_qty_var.get().strip()
-                edited_name = self.name_preview.get("1.0", "end-1c").strip()
-                if not edited_name:
-                    edited_name = getattr(self.product, "name", "Unbekannt")
-                pdf_data = self.label_printer.create_order_label_pdf(
-                    self.product, self.component, invoice, current_qty, edited_name
-                )
-            else:
-                messagebox.showinfo("Fehlende Daten", "Keine Rechnung vorhanden, bitte Datensatz mit Rechnung auswählen!")
+            # ==========================
+            # Filename vorbereiten
+            # ==========================
+            # Default Code sauber machen (nur Buchstaben/Zahlen)
+            default_code = getattr(self.component, "default_code", "NODEFAULT")
+
+            file_name = self.sanitize_filename(f"{default_code}_{chargenr}_{timestamp}.pdf")
+            
+            # ==========================
+            # PDF bauen
+            # ==========================
+            current_qty = self.current_qty_var.get().strip()
+            edited_name = self.name_preview.get("1.0", "end-1c").strip()
+            if not edited_name:
+                edited_name = getattr(self.product, "name", "Unbekannt")
+
+            pdf_data = self.label_printer.create_order_label_pdf(
+                self.product, self.component, invoice, current_qty, edited_name
+            )
         
         # Produktetikett
         elif mode == "Produktetikett" and self.product:
