@@ -14,19 +14,34 @@ class EtikettApp(tk.Tk):
         self.geometry("1000x630")
 
         self.app_version = app_version
-        self.odoo_client = OdooClient()
-        self.label_printer = LabelPrinter()
         self.settings_manager = SettingsManager()
 
-        # Einstellungen laden und direkt setzen
+        # Odoo Initialisierung
         odoo_settings = self.settings_manager.get_odoo_settings()
+        
+        # Wenn alle Felder belegt → initialisieren
         if all(odoo_settings.values()):
             self.odoo_client = OdooClient(**odoo_settings)
-            
-        printNode_settings = self.settings_manager.get_printnode_settings()
-        if all(printNode_settings.values()):
-            self.label_printer = LabelPrinter(**printNode_settings)
+        else:
+            # Leere Version
+            self.odoo_client = OdooClient()
 
+        # PrintNode + LabelPrinter initialisieren
+        printNode_settings = self.settings_manager.get_printnode_settings()
+        printer_settings = self.settings_manager.get_printer_settings()
+
+        # LabelPrinter mit SettingsManager erstellen
+        self.label_printer = LabelPrinter(
+            api_key = printNode_settings.get("api_key", ""),
+            settings_manager = self.settings_manager,
+            printer_id = printer_settings.get("last_printer_id", "")
+        )
+
+        # Wenn Printer-ID gespeichert wurde, übernehmen:
+        if printer_settings.get("last_printer_id"):
+            self.label_printer.printer_id = printer_settings["last_printer_id"]
+
+        # UI aufbauen
         # Menü
         self.create_menu()
 
@@ -42,7 +57,7 @@ class EtikettApp(tk.Tk):
                 parent, self, self.odoo_client, self.label_printer, self.settings_manager
             ),
             "Produktseite": lambda parent: ProductPage(
-                parent, self, self.odoo_client, self.label_printer
+                parent, self, self.odoo_client, self.label_printer, self.settings_manager
             )
         }
 
