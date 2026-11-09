@@ -436,8 +436,10 @@ class LabelPrinter:
         """
         Gibt eine Liste der verfügbaren Drucker mit ID und Namen zurück.
         """
-        # url = f"{self.base_url}/printers"
-        # response = requests.get(url, headers=self.headers)
+        # Ohne API-Key gibt es keine Drucker (sonst 401 von PrintNode).
+        if not self.api_key:
+            return []
+
         response = requests.get(
             "https://api.printnode.com/printers",
             auth=(self.api_key, '')

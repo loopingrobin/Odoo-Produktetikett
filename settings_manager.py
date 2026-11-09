@@ -1,7 +1,8 @@
 import json
 import os
 
-CONFIG_FILE = "config.json"
+# Immer neben dem Programm speichern, unabhängig vom aktuellen Arbeitsverzeichnis.
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
 class SettingsManager:
     def __init__(self):

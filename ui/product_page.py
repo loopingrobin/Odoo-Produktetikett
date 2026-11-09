@@ -251,7 +251,12 @@ class ProductPage(ttk.Frame):
         ttk.Button(printer_frame, text="Etikett drucken", command=self.print_label).grid(row=1, column=2)
 # ----------------------------------------------------------------------------
     def load_printers(self):
-        printers = self.label_printer.get_printers()  # deine API
+        try:
+            printers = self.label_printer.get_printers()
+        except Exception as e:
+            # z. B. ungültiger API-Key (401) oder keine Verbindung: Programm soll trotzdem starten.
+            print(f"⚠️ Drucker konnten nicht geladen werden: {e}")
+            printers = []
         names = []
 
         self.printer_map.clear()
