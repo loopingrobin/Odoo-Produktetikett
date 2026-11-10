@@ -67,7 +67,7 @@ class ManufacturingOrder(ProductItem):
     product_id: int = 0
     manufacturing_name: str = ""
     date_start: str = ""
-    lot_producing_id: str = ""
+    lot_producing_id: object = False  # [id, name] der ersten Charge oder False
     components: List[Component] = field(default_factory=list)
 
 @dataclass
@@ -339,7 +339,7 @@ class OdooClient:
                         'product_id',
                         'product_qty',
                         'date_start',
-                        'lot_producing_id',
+                        'lot_producing_ids',  # Odoo 19: Many2many (früher lot_producing_id)
                         'move_raw_ids'
                     ],
                     'limit': limit,
@@ -370,8 +370,8 @@ class OdooClient:
                         name=product_data.get(product_id, {}).name if product_data else "Unbekannt",
                         default_code=product_data.get(product_id, {}).default_code,
                         quantity=order.get("product_qty", 0.0),
-                        date_start=order.get("date_start", "")[:10],
-                        lot_producing_id=order.get("lot_producing_id", ""),
+                        date_start=(order.get("date_start") or "")[:10],
+                        lot_producing_id=self.get_first_lot(order.get("lot_producing_ids")),
                         ce=product_data.get(product_id, {}).ce if product_data else False,
                         user_manual=product_data.get(product_id, {}).user_manual if product_data else False,
                         udi=product_data.get(product_id, {}).udi if product_data else None,
@@ -385,6 +385,23 @@ class OdooClient:
 
         except Exception as e:
             raise Exception(f"Fehler beim Abrufen der Fertigungsdaten: {str(e)}")
+# ----------------------------------------------------------------------------
+    def get_first_lot(self, lot_ids):
+        """
+        Odoo 19: Ein Fertigungsauftrag kann mehrere Chargen/Seriennummern haben
+        (lot_producing_ids). Für das Etikett wird die erste als [id, name]
+        zurückgegeben, wie es früher lot_producing_id geliefert hat.
+        Ohne Charge wird False zurückgegeben.
+        """
+        if not lot_ids:
+            return False
+        lots = self.models.execute_kw(
+            self.db, self.uid, self.password,
+            "stock.lot", "read",
+            [[lot_ids[0]]],
+            {"fields": ["name"]}
+        )
+        return [lots[0]["id"], lots[0]["name"]] if lots else False
 # ----------------------------------------------------------------------------
     def get_components(self, move_ids: list[int]) -> list[Component]:
         """

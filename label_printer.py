@@ -302,7 +302,8 @@ class LabelPrinter:
         # LOT
         y -= 5 * mm
         c.drawImage(self.lot_image, x_symbol, y, width=width_symbol, height=heigth_symbol, preserveAspectRatio=True, mask='auto')
-        c.drawString(x_symbol + 6 * mm, y + 0.5 * mm, f"{product.lot_producing_id[1]}")
+        lot = getattr(product, "lot_producing_id", None)
+        c.drawString(x_symbol + 6 * mm, y + 0.5 * mm, f"{lot[1]}" if lot else "")
 
         # QR-Code
         x_qr = 3 * mm
