@@ -158,7 +158,7 @@ class LabelPrinter:
         edited_name: str | None = None
     ) -> bytes:
         """
-        Erzeugt ein Auftragsetikett (Bestellposition) als PDF im Speicher
+        Erzeugt ein Lageretikett (Bestellposition) als PDF im Speicher
         und gibt es als Bytes zurück.
 
         Parameter

@@ -182,7 +182,7 @@ class ProductPage(ttk.Frame):
         self.mode_select = ttk.Combobox(
             controls_frame,
             textvariable=self.mode_var,
-            values=["Auftragsetikett", "Produktetikett"],
+            values=["Lageretikett", "Produktetikett"],
             state="readonly",
             width=15
         )
@@ -405,6 +405,17 @@ class ProductPage(ttk.Frame):
         self.entries_tree.configure(text="0 Einträge")
         self.hide_lot_select()
         self.hide_charge_field()
+        self.clear_preview()
+# ----------------------------------------------------------------------------
+    def clear_preview(self):
+        """Leert die Etiketten-Vorschau (Texte und Bild), z. B. bei Wechsel des Etikett-Typs."""
+        if self._preview_job is not None:
+            self.after_cancel(self._preview_job)
+            self._preview_job = None
+        self.name_preview.delete("1.0", tk.END)
+        self.label_preview.delete("1.0", tk.END)
+        self.preview_image = None
+        self.qr_label.configure(image="")
 # ----------------------------------------------------------------------------
     def on_overview_selected(self, event):
         """
@@ -423,8 +434,12 @@ class ProductPage(ttk.Frame):
             # Produkte anzeigen
             self.tree_products.delete(*self.tree_products.get_children())
             mode = self.mode_var.get()
-            # Auftragsetikett
-            if mode == "Auftragsetikett":
+            # Lageretikett
+            if mode == "Lageretikett":
+                # Neue Bestellung gewählt: Die Vorschau der vorherigen Position passt nicht
+                # mehr und bleibt leer, bis eine Position ausgewählt wird.
+                self.component = None
+                self.clear_preview()
                 for line in self.product.lines:
                     self.tree_products.insert(
                         "", "end", 
@@ -451,7 +466,7 @@ class ProductPage(ttk.Frame):
             self.tree_products.event_generate("<<TreeviewSelect>>")
 
             # Prüfung, ob Feld für Chargennummer sichtbar sein muss.
-            if mode == "Auftragsetikett":
+            if mode == "Lageretikett":
                 self.hide_lot_select()
                 if self.product.invoices:
                     # Rechnung vorhanden → Eingabefeld ausblenden
@@ -474,7 +489,7 @@ class ProductPage(ttk.Frame):
         aktualisiert (Tkinter ist nicht thread-sicher).
         """
         mode = self.mode_var.get()
-        if mode == "Auftragsetikett":
+        if mode == "Lageretikett":
             message = "Einkäufe werden geladen..."
             loader = self.odoo_client.get_purchases
             error_context = "Einkaufsdaten"
@@ -531,12 +546,15 @@ class ProductPage(ttk.Frame):
         self.product = None
         self.component = None
         self.tree_products.delete(*self.tree_products.get_children())
+        self.clear_preview()
+        self.hide_lot_select()
+        self.hide_charge_field()
         self.write_overview_data()
 # ----------------------------------------------------------------------------
     @staticmethod
     def build_search_text(item, mode) -> str:
         """Alle durchsuchbaren Texte eines Eintrags (klein geschrieben, durch Leerzeichen getrennt)."""
-        if mode == "Auftragsetikett":
+        if mode == "Lageretikett":
             parts = [item.name, item.partner_name, item.date_order]
             parts += [invoice.name for invoice in item.invoices]
             parts += [f"{line.default_code or ''} {line.name}" for line in item.lines]
@@ -583,8 +601,8 @@ class ProductPage(ttk.Frame):
             count_text = f"{total} Einträge"
         self.entries_tree.configure(text=count_text)
 
-        # Auftragsetikett
-        if mode == "Auftragsetikett":
+        # Lageretikett
+        if mode == "Lageretikett":
             # Überschriften im Treeview werden gesetzt.
             self.tree.heading('reference1', text='Bestellnr.')
             self.tree.heading('reference2', text='Rechnungsnr.')
@@ -688,8 +706,8 @@ class ProductPage(ttk.Frame):
 
         try:
             mode = self.mode_var.get()
-            # Auftragsetikett
-            if mode == "Auftragsetikett":
+            # Lageretikett
+            if mode == "Lageretikett":
                 self.component = self.product.lines[component_index]
 
             # Produktetikett
@@ -714,8 +732,8 @@ class ProductPage(ttk.Frame):
         preview = ""
 
         mode = self.mode_var.get()
-        # Auftragsetikett
-        if mode == "Auftragsetikett" and self.product:
+        # Lageretikett
+        if mode == "Lageretikett" and self.product:
             invoices = getattr(self.product, "invoices", [])
             name_preview = getattr(self.component, 'name', 'Unbekannt')
             preview = (
@@ -767,8 +785,8 @@ class ProductPage(ttk.Frame):
                     parts.append(f"(10){lot[1]}")
                 qr_string = "".join(parts) if parts else "NO DATA"
 
-            elif mode == "Auftragsetikett":
-                # QR-String für Auftragsetikett
+            elif mode == "Lageretikett":
+                # QR-String für Lageretikett
                 default_code = getattr(self.component, "default_code", None)
                 invoice_name = getattr(self.product.invoices[0], "name", None) if getattr(self.product, "invoices", []) else None
                 if default_code and invoice_name:
@@ -823,15 +841,15 @@ class ProductPage(ttk.Frame):
 
         if not self.product:
             raise ValueError("Bitte zuerst einen Eintrag in der Gesamtübersicht auswählen!")
-        if mode == "Auftragsetikett" and not self.component:
+        if mode == "Lageretikett" and not self.component:
             raise ValueError("Bitte eine Position in der Produktübersicht auswählen!")
 
         timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
         current_qty = self.current_qty_var.get().strip()
         edited_name = self.name_preview.get("1.0", "end-1c").strip()
 
-        # Auftragsetikett
-        if mode == "Auftragsetikett":
+        # Lageretikett
+        if mode == "Lageretikett":
             if self.product.invoices:
                 # FALL 1: Rechnung vorhanden → Chargennummer ohne "RG"
                 invoice = self.product.invoices[0]
