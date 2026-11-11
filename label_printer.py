@@ -198,7 +198,11 @@ class LabelPrinter:
 
         # Chargennummer rechts neben Logo
         nummer = invoice.name.removeprefix("RG")
-        c.drawString(56 * mm, y - 2 * mm, f"Chargennummer   {nummer}")
+        charge_text = f"Chargennummer   {nummer}"
+        # Lange Chargennummern verkleinern, damit sie nicht über den Etikettenrand laufen.
+        c.setFont("Titillium", self.fit_font_size(charge_text, "Titillium", 10, (DESIGN_WIDTH_MM - 56 - 2) * mm))
+        c.drawString(56 * mm, y - 2 * mm, charge_text)
+        c.setFont("Titillium", 10)
 
         # Bezeichnung (zentriert in Box)
         y -= 30 * mm
@@ -236,7 +240,11 @@ class LabelPrinter:
 
         # Lieferant nebeneinander
         y -= 5 * mm
-        c.drawString(5 * mm, y, f"Lieferant   {order.partner_name}")
+        supplier_text = f"Lieferant   {order.partner_name}"
+        # Der QR-Code beginnt bei 80 mm: lange Lieferantennamen verkleinern statt überlappen.
+        supplier_size = 7 if user_quantity.isdigit() else 10
+        c.setFont("Titillium", self.fit_font_size(supplier_text, "Titillium", supplier_size, (80 - 5 - 2) * mm))
+        c.drawString(5 * mm, y, supplier_text)
         
         # Speichern
         c.save()
@@ -411,6 +419,13 @@ class LabelPrinter:
 
         # Zustand zurücksetzen
         c.restoreState()
+# ----------------------------------------------------------------------------
+    @staticmethod
+    def fit_font_size(text: str, font: str, size: float, max_width: float, min_size: float = 5.0) -> float:
+        """Größte Schriftgröße (höchstens 'size'), bei der der Text in 'max_width' passt."""
+        while size > min_size and pdfmetrics.stringWidth(text, font, size) > max_width:
+            size -= 0.5
+        return size
 # ----------------------------------------------------------------------------
     def draw_paragraph(self, c, text: str, x: float, y: float, w: float, h: float, style: str = "header"):
         """Hilfsmethode: zeichnet Text vertikal zentriert in eine Box."""

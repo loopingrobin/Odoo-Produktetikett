@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime
 import os
 import re
@@ -20,6 +21,25 @@ PREVIEW_MAX_HEIGHT = 220
 PREVIEW_DELAY_MS = 300
 # Höchstzahl der Kopien pro Druck
 MAX_COPIES = 99
+
+# Bearbeitbare Felder des Etiketts je Etikett-Typ (Schlüssel → Beschriftung).
+# Die Eingaben gelten nur für das gerade angezeigte Etikett und werden nicht gespeichert.
+FIELD_LABELS = {
+    "Produktetikett": {
+        "code": "Referenz", "udi": "UDI", "lot": "Charge (LOT)",
+        "date": "Datum (JJJJ-MM-TT)", "total": "Menge gesamt",
+    },
+    "Lageretikett": {
+        "code": "Artikelnummer", "lot": "Chargennummer",
+        "supplier": "Lieferant", "total": "Menge gesamt",
+    },
+}
+# Ankreuzfelder des Produktetiketts (Schlüssel → Beschriftung)
+FLAG_LABELS = {
+    "ce": "CE-Kennzeichnung", "manual": "Gebrauchsanweisung",
+    "md": "Medizinprodukt", "single": "Einmalverwendung",
+}
+DATE_FORMAT = "%Y-%m-%d"
 
 class LoadingPopup(tk.Toplevel):
     def __init__(self, parent, message="Lade Daten...", on_cancel=None):
@@ -106,6 +126,12 @@ class ProductPage(ttk.Frame):
         # Anzahl der Kopien beim Drucken und gewählte Charge (bei mehreren Chargen)
         self.copies_var = tk.StringVar(value="1")
         self.lot_var = tk.StringVar()
+
+        # Bearbeitbarer Etiketteninhalt: nur temporär, wird nirgends gespeichert und beim
+        # Wechsel auf einen anderen Eintrag wieder mit den Odoo-Daten gefüllt.
+        self.field_vars = {key: tk.StringVar() for key in ("code", "udi", "lot", "date", "supplier", "total")}
+        self.flag_vars = {key: tk.BooleanVar() for key in FLAG_LABELS}
+        self._loading_fields = False  # True, solange die Felder programmatisch gefüllt werden
 
         # Vorschau-Aktualisierung (verzögert, damit nicht bei jedem Tastendruck neu gerendert wird)
         self._preview_job = None
@@ -265,7 +291,7 @@ class ProductPage(ttk.Frame):
         # Einzelteilübersicht
         ttk.Label(right_frame, text="Produktübersicht").pack(pady=5, anchor="w")
 
-        self.tree_products = ttk.Treeview(right_frame, columns=("reference", "designation", "quantity"), show="headings", height=8)
+        self.tree_products = ttk.Treeview(right_frame, columns=("reference", "designation", "quantity"), show="headings", height=5)
 
         # Spaltenbreite
         self.tree_products.column("reference", width=90, anchor="w", stretch=False)
@@ -285,7 +311,9 @@ class ProductPage(ttk.Frame):
         preview_frame.pack(anchor="nw", pady=(5, 10), fill="x")
 
         # Überschrift
-        ttk.Label(preview_frame, text="Etikett-Vorschau").grid(row=0, column=0, sticky="w", padx=(0, 10))
+        ttk.Label(
+            preview_frame, text="Etikett-Vorschau (Änderungen gelten nur für dieses Etikett)"
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=(0, 10))
 
         # Bild rechts von der Überschrift: Vorschau des fertigen Etiketts
         # (ohne pymupdf nur der QR-Code)
@@ -293,11 +321,35 @@ class ProductPage(ttk.Frame):
         self.qr_label.grid(row=1, column=1, rowspan=2, padx=10, sticky="n")
 
         # Etikett-Vorschau (Textfeld); der Text dient zugleich als Bezeichnung auf dem Etikett
-        self.name_preview = tk.Text(preview_frame, height=4, wrap="word")
+        self.name_preview = tk.Text(preview_frame, height=3, wrap="word")
         self.name_preview.grid(row=1, column=0, sticky="nsew", pady=(5, 0))
         self.name_preview.bind("<KeyRelease>", self.schedule_preview_update)
-        self.label_preview = tk.Text(preview_frame, height=8, wrap="word")
-        self.label_preview.grid(row=2, column=0, sticky="nsew", pady=(5, 0))
+
+        # Bearbeitbare Felder des Etiketts: Sie fließen in Vorschau und Druck ein, werden aber
+        # nirgends gespeichert (auch nicht in Odoo).
+        self.fields_frame = ttk.Frame(preview_frame)
+        self.fields_frame.grid(row=2, column=0, sticky="nsew", pady=(5, 0))
+        self.fields_frame.columnconfigure(1, weight=1)
+
+        self.field_widgets = {}  # Schlüssel → (Beschriftung, Eingabefeld)
+        for row, key in enumerate(("code", "udi", "lot", "date", "supplier", "total")):
+            label = ttk.Label(self.fields_frame, text="")
+            label.grid(row=row, column=0, sticky="w")
+            entry = ttk.Entry(self.fields_frame, textvariable=self.field_vars[key], width=24)
+            entry.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=1)
+            self.field_widgets[key] = (label, entry)
+            self.field_vars[key].trace_add("write", self.schedule_preview_update)
+
+        # Ankreuzfelder (nur Produktetikett)
+        self.flags_frame = ttk.Frame(self.fields_frame)
+        self.flags_frame.grid(row=6, column=0, columnspan=2, sticky="w", pady=(3, 0))
+        for i, (key, text) in enumerate(FLAG_LABELS.items()):
+            ttk.Checkbutton(
+                self.flags_frame, text=text, variable=self.flag_vars[key],
+                command=self.schedule_preview_update
+            ).grid(row=i, column=0, sticky="w")
+
+        self.update_form_for_mode()
 
         # Grid-Konfiguration für saubere Größenanpassung
         preview_frame.columnconfigure(0, weight=1)   # Textfeld dehnt sich
@@ -314,15 +366,6 @@ class ProductPage(ttk.Frame):
         self.current_qty_entry = ttk.Entry(number_frame, textvariable=self.current_qty_var)
         self.current_qty_entry.grid(row=1, column=0, padx=(0, 10), sticky="w")
 
-        # Eingabefeld für manuelle Chargennummer
-        self.chargennr_label = ttk.Label(number_frame, text="Chargennummer (manuell):")
-        self.chargennr_label.grid(row=0, column=1, sticky="w")
-
-        self.chargennr_entry = ttk.Entry(number_frame, textvariable=self.chargennr_var)
-        self.chargennr_entry.grid(row=1, column=1, sticky="w")
-
-        self.hide_charge_field()
-
         # Auswahl der Charge (nur sichtbar, wenn ein Fertigungsauftrag mehrere Chargen hat)
         self.lot_label = ttk.Label(number_frame, text="Charge:")
         self.lot_label.grid(row=0, column=1, sticky="w")
@@ -336,9 +379,13 @@ class ProductPage(ttk.Frame):
         self.copies_spinbox = ttk.Spinbox(number_frame, from_=1, to=MAX_COPIES, width=5, textvariable=self.copies_var)
         self.copies_spinbox.grid(row=1, column=2, sticky="w", padx=(10, 0))
 
-        # Vorschau aktualisieren, wenn Stückzahl oder manuelle Chargennummer geändert werden
+        # Verwirft alle Änderungen am Etikett und lädt wieder die Daten aus Odoo
+        ttk.Button(
+            number_frame, text="Änderungen zurücksetzen", command=self.reset_label_edits
+        ).grid(row=1, column=3, sticky="w", padx=(10, 0))
+
+        # Vorschau aktualisieren, wenn die Stückzahl geändert wird
         self.current_qty_var.trace_add("write", self.schedule_preview_update)
-        self.chargennr_var.trace_add("write", self.schedule_preview_update)
 
 
         # Druckerauswahl
@@ -404,18 +451,47 @@ class ProductPage(ttk.Frame):
         self.tree_products.delete(*self.tree_products.get_children())
         self.entries_tree.configure(text="0 Einträge")
         self.hide_lot_select()
-        self.hide_charge_field()
         self.clear_preview()
+        self.update_form_for_mode()
 # ----------------------------------------------------------------------------
     def clear_preview(self):
-        """Leert die Etiketten-Vorschau (Texte und Bild), z. B. bei Wechsel des Etikett-Typs."""
+        """Leert die Etiketten-Vorschau (Bezeichnung, Felder und Bild), z. B. bei Wechsel des Etikett-Typs."""
         if self._preview_job is not None:
             self.after_cancel(self._preview_job)
             self._preview_job = None
         self.name_preview.delete("1.0", tk.END)
-        self.label_preview.delete("1.0", tk.END)
+        self.clear_fields()
         self.preview_image = None
         self.qr_label.configure(image="")
+# ----------------------------------------------------------------------------
+    def clear_fields(self):
+        """Leert die bearbeitbaren Etikettenfelder."""
+        previous = self._loading_fields  # kann schon von load_label_data gesetzt sein
+        self._loading_fields = True
+        try:
+            for var in self.field_vars.values():
+                var.set("")
+            for var in self.flag_vars.values():
+                var.set(False)
+        finally:
+            self._loading_fields = previous
+# ----------------------------------------------------------------------------
+    def update_form_for_mode(self):
+        """Zeigt nur die Felder an, die zum gewählten Etikett-Typ gehören."""
+        mode = self.mode_var.get()
+        labels = FIELD_LABELS.get(mode, {})
+        for key, (label, entry) in self.field_widgets.items():
+            if key in labels:
+                label.configure(text=f"{labels[key]}:")
+                label.grid()
+                entry.grid()
+            else:
+                label.grid_remove()
+                entry.grid_remove()
+        if mode == "Produktetikett":
+            self.flags_frame.grid()
+        else:
+            self.flags_frame.grid_remove()
 # ----------------------------------------------------------------------------
     def on_overview_selected(self, event):
         """
@@ -465,18 +541,10 @@ class ProductPage(ttk.Frame):
 
             self.tree_products.event_generate("<<TreeviewSelect>>")
 
-            # Prüfung, ob Feld für Chargennummer sichtbar sein muss.
+            # Chargenauswahl gibt es nur beim Produktetikett (bei mehreren Chargen).
             if mode == "Lageretikett":
                 self.hide_lot_select()
-                if self.product.invoices:
-                    # Rechnung vorhanden → Eingabefeld ausblenden
-                    self.hide_charge_field()
-                else:
-                    # Keine Rechnung → Eingabefeld anzeigen
-                    self.show_charge_field()
             else:
-                # Andere Modi (z. B. Produktetikett)
-                self.hide_charge_field()
                 self.update_lot_select()
 
         except Exception as e:
@@ -548,7 +616,6 @@ class ProductPage(ttk.Frame):
         self.tree_products.delete(*self.tree_products.get_children())
         self.clear_preview()
         self.hide_lot_select()
-        self.hide_charge_field()
         self.write_overview_data()
 # ----------------------------------------------------------------------------
     @staticmethod
@@ -641,18 +708,6 @@ class ProductPage(ttk.Frame):
 
         self.tree.event_generate("<<TreeviewSelect>>")
 # ----------------------------------------------------------------------------
-    def hide_charge_field(self):
-        """ Versteckt Label und Eingabefeld für die manuelle Chargennummer """
-        self.chargennr_label.grid_remove()
-        self.chargennr_entry.grid_remove()
-# ----------------------------------------------------------------------------
-    def show_charge_field(self):
-        """
-        Lässt Label und Eingabefeld für die manuelle Chargennummer erscheinen
-        """
-        self.chargennr_label.grid()
-        self.chargennr_entry.grid()
-# ----------------------------------------------------------------------------
     def hide_lot_select(self):
         """ Versteckt die Chargenauswahl """
         self.lot_label.grid_remove()
@@ -674,19 +729,11 @@ class ProductPage(ttk.Frame):
             self.hide_lot_select()
 # ----------------------------------------------------------------------------
     def on_lot_selected(self, event=None):
-        """Die gewählte Charge gilt für Vorschau, QR-Code, Dateiname und Druck."""
-        name = self.lot_var.get()
-        for lot in self.product.lots:
-            if lot[1] == name:
-                self.product.lot_producing_id = lot
-                break
-
-        # Eine vom Benutzer geänderte Bezeichnung soll beim Chargenwechsel erhalten bleiben.
-        edited_name = self.name_preview.get("1.0", "end-1c")
-        self.load_label_data()
-        self.name_preview.delete("1.0", tk.END)
-        self.name_preview.insert("1.0", edited_name)
-        self.update_pdf_preview()
+        """
+        Die gewählte Charge wird ins Feld 'Charge' übernommen (und gilt damit für Vorschau,
+        QR-Code, Dateiname und Druck). Andere Änderungen am Etikett bleiben erhalten.
+        """
+        self.field_vars["lot"].set(self.lot_var.get())
 # ----------------------------------------------------------------------------
 # endregion
 # ----------------------------------------------------------------------------
@@ -710,11 +757,12 @@ class ProductPage(ttk.Frame):
             if mode == "Lageretikett":
                 self.component = self.product.lines[component_index]
 
-            # Produktetikett
+                self.load_label_data()
+
+            # Produktetikett: Die Komponente ändert das Etikett nicht, deshalb bleiben
+            # bereits vorgenommene Änderungen erhalten.
             elif mode == "Produktetikett":
                 self.component = self.product.components[component_index]
-
-            self.load_label_data()
 
         except Exception as e:
             messagebox.showerror("Fehler", f"Produktdetails konnten nicht angezeigt werden:\n{str(e)}")
@@ -723,88 +771,105 @@ class ProductPage(ttk.Frame):
 # ----------------------------------------------------------------------------
 # region Etikettenvorschau / -druck
 # ----------------------------------------------------------------------------
+    @staticmethod
+    def format_number(value) -> str:
+        """5.0 → '5', 2.5 → '2.5' (für das Feld 'Menge gesamt')."""
+        value = float(value or 0)
+        return str(int(value)) if value.is_integer() else str(value)
+# ----------------------------------------------------------------------------
+    @staticmethod
+    def default_lot_for_invoice(invoice) -> str:
+        """Chargennummer aus der Rechnungsnummer: ohne das Präfix 'RG'."""
+        return (invoice.name or "NOCHARGE").removeprefix("RG")
+# ----------------------------------------------------------------------------
     def load_label_data(self):
         """
-        Läd die Einzelteildaten in die Etikettenvorschau.
+        Füllt Bezeichnung und Felder des Etiketts mit den Daten des gewählten Eintrags.
+        Dabei werden alle bisherigen Änderungen überschrieben. Danach wird die
+        Vorschau aktualisiert.
         """
-        name_preview = ""
-
-        preview = ""
-
         mode = self.mode_var.get()
-        # Lageretikett
-        if mode == "Lageretikett" and self.product:
-            invoices = getattr(self.product, "invoices", [])
-            name_preview = getattr(self.component, 'name', 'Unbekannt')
-            preview = (
-                f"Chargennummer: {invoices[0].name if invoices else 'Keine Rechnung'}\n"
-                f"Artikelnummer: {getattr(self.component, 'default_code', '')}\n"
-                f"Menge: {getattr(self.component, 'quantity', 0)}\n"
-                f"Lieferant: {getattr(self.product, 'partner_name', 'Unbekannt')}\n"
-                f"Rechnung vom {invoices[0].date if invoices else 'Keine Rechnung'}"
-            )
+        ready = bool(self.product) and (mode == "Produktetikett" or bool(self.component))
 
-        # Produktetikett
-        elif mode == "Produktetikett" and self.product:
-            name_preview = getattr(self.product, 'name', 'Unbekannt')
-            lot = getattr(self.product, "lot_producing_id", None)
+        name = ""
+        self._loading_fields = True
+        try:
+            self.clear_fields()
 
-            # LOT sicher extrahieren
-            if isinstance(lot, (list, tuple)) and len(lot) > 1:
-                lot_value = lot[1]
-            elif isinstance(lot, str):
-                lot_value = lot
-            else:
-                lot_value = "—"
-            preview = (
-                f"Referenz: {getattr(self.product, 'default_code', '')}\n"
-                f"LOT: {lot_value}\n"
-                f"UDI: {getattr(self.product, 'udi', '')}\n"
-                f"CE-Kennzeichnung: {'Ja' if getattr(self.product, 'ce', False) else 'Nein'}\n"
-                f"Gebrauchsanweisung: {'Ja' if getattr(self.product, 'user_manual', False) else 'Nein'}\n"
-                f"Medizinprodukt: {'Ja' if getattr(self.product, 'medical_device', False) else 'Nein'}\n"
-                f"Einmalverwendung: {'Ja' if getattr(self.product, 'single_use', False) else 'Nein'}"
-            )
-
-        # Text anzeigen.
-        self.name_preview.delete("1.0", tk.END)
-        self.name_preview.insert("1.0", name_preview)
-        self.label_preview.delete("1.0", tk.END)
-        self.label_preview.insert("1.0", preview)
-
-        # QR-Code vorbereiten (wird angezeigt, wenn keine PDF-Vorschau möglich ist).
-        if self.product:
-            if mode == "Produktetikett":
-                # QR-String für Produktetikett
-                parts = []
-                udi = getattr(self.product, "udi", None)
-                lot = getattr(self.product, "lot_producing_id", None)
-                if udi:
-                    parts.append(f"(01){udi}")
-                if lot and len(lot) > 1:
-                    parts.append(f"(10){lot[1]}")
-                qr_string = "".join(parts) if parts else "NO DATA"
-
-            elif mode == "Lageretikett":
-                # QR-String für Lageretikett
-                default_code = getattr(self.component, "default_code", None)
-                invoice_name = getattr(self.product.invoices[0], "name", None) if getattr(self.product, "invoices", []) else None
-                if default_code and invoice_name:
-                    qr_string = f"{default_code}-{invoice_name}"
+            # Lageretikett: Daten der gewählten Position
+            if ready and mode == "Lageretikett":
+                product, component = self.product, self.component
+                name = component.name or ""
+                if product.invoices:
+                    lot = self.default_lot_for_invoice(product.invoices[0])
                 else:
-                    qr_string = "NO DATA"
+                    lot = self.chargennr_var.get()  # zuletzt verwendete manuelle Charge
+                self.field_vars["code"].set(component.default_code or "")
+                self.field_vars["lot"].set(lot)
+                self.field_vars["supplier"].set(product.partner_name or "")
+                self.field_vars["total"].set(self.format_number(component.quantity))
 
-            img = self.label_printer.generate_qr_pil(qr_string, 100)
+            # Produktetikett: Daten des Fertigungsauftrags
+            elif ready:
+                product = self.product
+                name = product.name or ""
+                lot = product.lot_producing_id
+                self.field_vars["code"].set(product.default_code or "")
+                self.field_vars["udi"].set(product.udi or "")
+                self.field_vars["lot"].set(lot[1] if lot else "")
+                self.field_vars["date"].set(product.date_start or "")
+                self.field_vars["total"].set(self.format_number(product.quantity))
+                self.flag_vars["ce"].set(bool(product.ce))
+                self.flag_vars["manual"].set(bool(product.user_manual))
+                self.flag_vars["md"].set(bool(product.medical_device))
+                self.flag_vars["single"].set(bool(product.single_use))
+        finally:
+            self._loading_fields = False
 
-            # Anzeige in Tkinter
-            self.preview_image = ImageTk.PhotoImage(img)
-            self.qr_label.configure(image=self.preview_image)
+        self.name_preview.delete("1.0", tk.END)
+        self.name_preview.insert("1.0", name)
 
-            # Vorschau des fertigen Etiketts ersetzt den QR-Code (wenn pymupdf vorhanden ist).
-            self.update_pdf_preview()
+        if not ready:
+            return
+
+        # QR-Code (wird angezeigt, wenn keine PDF-Vorschau möglich ist).
+        qr_image = self.label_printer.generate_qr_pil(self.preview_qr_string(), 100)
+        self.preview_image = ImageTk.PhotoImage(qr_image)
+        self.qr_label.configure(image=self.preview_image)
+
+        # Vorschau des fertigen Etiketts ersetzt den QR-Code (wenn pymupdf vorhanden ist).
+        self.update_pdf_preview()
+# ----------------------------------------------------------------------------
+    def reset_label_edits(self):
+        """Verwirft alle Änderungen am Etikett und lädt die Daten des gewählten Eintrags neu."""
+        if not self.product or (self.mode_var.get() == "Lageretikett" and not self.component):
+            return
+        if self.mode_var.get() == "Produktetikett":
+            self.update_lot_select()  # Auswahl zurück auf die erste Charge
+        self.load_label_data()
+# ----------------------------------------------------------------------------
+    def preview_qr_string(self) -> str:
+        """Inhalt des QR-Codes für die einfache Anzeige (ohne PDF-Vorschau)."""
+        try:
+            product, component, invoice, _, lot = self.collect_label_objects()
+        except ValueError:
+            return "NO DATA"
+
+        if self.mode_var.get() == "Lageretikett":
+            code = component.default_code
+            return f"{code}-{invoice.name}" if code and invoice.name else "NO DATA"
+
+        parts = []
+        if product.udi:
+            parts.append(f"(01){product.udi}")
+        if lot:
+            parts.append(f"(10){lot}")
+        return "".join(parts) or "NO DATA"
 # ----------------------------------------------------------------------------
     def schedule_preview_update(self, *args):
         """Aktualisiert die Etiketten-Vorschau kurz nach der letzten Eingabe."""
+        if self._loading_fields:  # Felder werden gerade programmatisch gefüllt
+            return
         if self._preview_job is not None:
             self.after_cancel(self._preview_job)
         self._preview_job = self.after(PREVIEW_DELAY_MS, self.update_pdf_preview)
@@ -831,11 +896,36 @@ class ProductPage(ttk.Frame):
         self.preview_image = ImageTk.PhotoImage(image)
         self.qr_label.configure(image=self.preview_image)
 # ----------------------------------------------------------------------------
-    def build_label(self) -> tuple[bytes, str]:
+    @staticmethod
+    def parse_quantity(text: str) -> float:
+        """Zahl aus dem Feld 'Menge gesamt' (Komma als Dezimaltrenner erlaubt)."""
+        try:
+            value = float(text.strip().replace(",", "."))
+        except ValueError:
+            raise ValueError("'Menge gesamt' muss eine Zahl sein.")
+        if value < 0:
+            raise ValueError("'Menge gesamt' darf nicht negativ sein.")
+        return value
+# ----------------------------------------------------------------------------
+    @staticmethod
+    def parse_date(text: str) -> str:
+        """Datum im Format JJJJ-MM-TT; ein leeres Feld bedeutet: kein Datum auf dem Etikett."""
+        text = text.strip()
+        if text:
+            try:
+                datetime.strptime(text, DATE_FORMAT)
+            except ValueError:
+                raise ValueError("Das Datum bitte als JJJJ-MM-TT eingeben (z. B. 2026-11-02).")
+        return text
+# ----------------------------------------------------------------------------
+    def collect_label_objects(self):
         """
-        Erstellt das PDF für den gewählten Eintrag und die aktuellen Eingaben.
-        Rückgabe: (PDF-Bytes, vorgeschlagener Dateiname).
-        Wirft ValueError mit einem Hinweis für den Benutzer, wenn Angaben fehlen.
+        Baut aus den Odoo-Daten und den (ggf. vom Benutzer geänderten) Feldern die
+        Objekte für das Etikett. Es werden Kopien erzeugt: Die geladenen Daten bleiben
+        unverändert, und nichts wird gespeichert (auch nicht in Odoo).
+
+        Rückgabe: (Eintrag, Position, Rechnung, Bezeichnung, Charge)
+        Wirft ValueError mit einem Hinweis für den Benutzer, wenn Angaben fehlen oder ungültig sind.
         """
         mode = self.mode_var.get()
 
@@ -844,51 +934,69 @@ class ProductPage(ttk.Frame):
         if mode == "Lageretikett" and not self.component:
             raise ValueError("Bitte eine Position in der Produktübersicht auswählen!")
 
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
-        current_qty = self.current_qty_var.get().strip()
+        fields = {key: var.get().strip() for key, var in self.field_vars.items()}
         edited_name = self.name_preview.get("1.0", "end-1c").strip()
+        total = self.parse_quantity(fields["total"])
 
         # Lageretikett
         if mode == "Lageretikett":
-            if self.product.invoices:
-                # FALL 1: Rechnung vorhanden → Chargennummer ohne "RG"
-                invoice = self.product.invoices[0]
-                chargenr = invoice.name.removeprefix("RG") if invoice.name else "NOCHARGE"
+            if not fields["lot"]:
+                raise ValueError("Bitte eine Chargennummer eingeben!")
+
+            component = replace(self.component, default_code=fields["code"] or None, quantity=total)
+            order = replace(self.product, partner_name=fields["supplier"])
+
+            invoices = self.product.invoices
+            if invoices and fields["lot"] == self.default_lot_for_invoice(invoices[0]):
+                # Charge unverändert: Die Rechnung bleibt wie sie ist (Rechnungsnummer im QR-Code).
+                invoice = invoices[0]
             else:
-                # FALL 2: KEINE Rechnung → manuelle Eingabe
-                chargenr = self.chargennr_var.get().strip()
-                if not chargenr:
-                    raise ValueError("Bitte eine Chargennummer eingeben!")
+                # Keine Rechnung oder Charge geändert: künstliche Rechnung mit dieser Charge.
+                invoice = Invoice(id=0, name=fields["lot"], date=None, total=0.0, state="manual")
 
-                # künstliche Invoice erzeugen (damit der alte Code weiterläuft)
-                invoice = Invoice(
-                    id=0,
-                    name=f"{chargenr}",
-                    date=None,
-                    total=0.0,
-                    state="manual"
-                )
+            return order, component, invoice, edited_name or component.name, fields["lot"]
 
-            default_code = getattr(self.component, "default_code", None) or "NODEFAULT"
-            file_name = self.sanitize_filename(f"{default_code}_{chargenr}_{timestamp}.pdf")
+        # Produktetikett
+        product = replace(
+            self.product,
+            name=edited_name or self.product.name,
+            default_code=fields["code"] or None,
+            udi=fields["udi"] or None,
+            date_start=self.parse_date(fields["date"]),
+            quantity=total,
+            lot_producing_id=[0, fields["lot"]] if fields["lot"] else False,
+            ce=self.flag_vars["ce"].get(),
+            user_manual=self.flag_vars["manual"].get(),
+            medical_device=self.flag_vars["md"].get(),
+            single_use=self.flag_vars["single"].get(),
+        )
+        return product, None, None, product.name, fields["lot"]
+# ----------------------------------------------------------------------------
+    def build_label(self) -> tuple[bytes, str]:
+        """
+        Erstellt das PDF für den gewählten Eintrag und die aktuellen Eingaben
+        (einschließlich der temporären Änderungen an den Feldern).
+        Rückgabe: (PDF-Bytes, vorgeschlagener Dateiname).
+        Wirft ValueError mit einem Hinweis für den Benutzer, wenn Angaben fehlen.
+        """
+        product, component, invoice, name, lot = self.collect_label_objects()
 
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+        current_qty = self.current_qty_var.get().strip()
+
+        # Lageretikett
+        if self.mode_var.get() == "Lageretikett":
+            default_code = component.default_code or "NODEFAULT"
+            file_name = self.sanitize_filename(f"{default_code}_{lot}_{timestamp}.pdf")
             pdf_data = self.label_printer.create_order_label_pdf(
-                self.product, self.component, invoice, current_qty,
-                edited_name or getattr(self.component, "name", "Unbekannt")
+                product, component, invoice, current_qty, name
             )
 
         # Produktetikett
         else:
-            lot = getattr(self.product, "lot_producing_id", None)
-            lot = lot[1] if lot else "NOLOT"
-
-            default_code = getattr(self.product, "default_code", None) or "NODEFAULT"
-            file_name = self.sanitize_filename(f"{default_code}_{lot}_{timestamp}.pdf")
-
-            pdf_data = self.label_printer.create_product_label_pdf(
-                self.product, current_qty,
-                edited_name or getattr(self.product, "name", "Unbekannt")
-            )
+            default_code = product.default_code or "NODEFAULT"
+            file_name = self.sanitize_filename(f"{default_code}_{lot or 'NOLOT'}_{timestamp}.pdf")
+            pdf_data = self.label_printer.create_product_label_pdf(product, current_qty, name)
 
         return pdf_data, file_name
 # ----------------------------------------------------------------------------
@@ -940,6 +1048,11 @@ class ProductPage(ttk.Frame):
             return
 
         status = "✅ Etikett an den Drucker gesendet." if copies == 1 else f"✅ {copies} Etiketten an den Drucker gesendet."
+
+        # Ohne Rechnung wird die Charge von Hand eingegeben: für die nächste Position merken
+        # (nur bis zum Programmende; es wird nichts gespeichert).
+        if self.mode_var.get() == "Lageretikett" and not self.product.invoices:
+            self.chargennr_var.set(self.field_vars["lot"].get().strip())
 
         # Optional als PDF speichern
         if self.save_pdf_var.get():
