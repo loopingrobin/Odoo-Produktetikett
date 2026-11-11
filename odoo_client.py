@@ -65,7 +65,9 @@ class ManufacturingOrder(ProductItem):
     product_id: int = 0
     manufacturing_name: str = ""
     date_start: str = ""
-    # [id, name] der ersten Charge/Seriennummer oder False
+    # Alle Chargen/Seriennummern des Auftrags als [id, name]
+    lots: list = field(default_factory=list)
+    # Aktuell gewählte Charge als [id, name] oder False (anfangs die erste von 'lots')
     lot_producing_id: object = False
     components: List[Component] = field(default_factory=list)
 
@@ -127,6 +129,7 @@ class OdooClient:
         self.isConnected = False
         self.last_error = ""
         self._product_cache: dict[int, ProductItem] = {}
+        self._searchable_cache: dict[str, set[str]] = {}
 
         # Beim Start verbinden, aber nie das Programm abstürzen lassen.
         if url and db and password:
@@ -172,6 +175,7 @@ class OdooClient:
         self.transport = None
         self.last_error = ""
         self._product_cache.clear()
+        self._searchable_cache.clear()
 
         if not (self.url and self.db and self.password):
             raise Exception("URL, Datenbank und API-Key/Passwort müssen angegeben werden.")
@@ -278,6 +282,41 @@ class OdooClient:
             result.extend(self._call(model, "read", ids=chunk, fields=fields))
         return result
 # ----------------------------------------------------------------------------
+    def _searchable_fields(self, model: str) -> set[str]:
+        """
+        Namen der in Odoo durchsuchbaren Felder eines Modells (fields_get, je
+        Modell einmal). Bei einem Fehler: leere Menge → keine Serversuche.
+        """
+        if model not in self._searchable_cache:
+            try:
+                info = self._call(model, "fields_get", attributes=["searchable"])
+                self._searchable_cache[model] = {n for n, a in info.items() if a.get("searchable")}
+            except Exception:
+                self._searchable_cache[model] = set()
+        return self._searchable_cache[model]
+# ----------------------------------------------------------------------------
+    def _build_search_domain(self, model: str, text: str, candidate_fields: list[str]) -> list:
+        """
+        Baut einen Odoo-Filter aus dem Suchtext: Jedes Wort muss in mindestens
+        einem der Felder vorkommen (Wörter UND-verknüpft, Felder ODER-verknüpft,
+        Groß-/Kleinschreibung egal). Felder, die Odoo nicht durchsuchen kann
+        (auch Pfade wie 'order_line.product_id'), werden übersprungen.
+        """
+        words = text.split()
+        if not words:
+            return []
+
+        searchable = self._searchable_fields(model)
+        fields = [f for f in candidate_fields if f.split(".")[0] in searchable]
+        if not fields:
+            raise Exception("Die Suche in Odoo ist für diese Daten nicht möglich.")
+
+        domain = []
+        for word in words:
+            domain += ["|"] * (len(fields) - 1)
+            domain += [[f, "ilike", word] for f in fields]
+        return domain
+# ----------------------------------------------------------------------------
 # endregion
 # ----------------------------------------------------------------------------
 # region Produkte und Rechnungen
@@ -340,10 +379,11 @@ class OdooClient:
 # ----------------------------------------------------------------------------
 # region Fertigung
 # ----------------------------------------------------------------------------
-    def get_manufacturing_orders(self, limit: int = 20) -> list[ManufacturingOrder]:
+    def get_manufacturing_orders(self, limit: int = 20, search: str = "") -> list[ManufacturingOrder]:
         """
-        Holt Fertigungsaufträge mit Hauptprodukt, Charge und Komponenten.
+        Holt Fertigungsaufträge mit Hauptprodukt, Chargen und Komponenten.
         Alle abhängigen Daten werden mit je einem Aufruf pro Modell geladen.
+        search: optionaler Suchtext, der direkt in Odoo gefiltert wird.
         """
         if not self.isConnected:
             raise Exception("Nicht verbunden mit Odoo.")
@@ -351,8 +391,12 @@ class OdooClient:
         try:
             self._product_cache.clear()
 
+            domain = self._build_search_domain(
+                "mrp.production", search,
+                ["name", "product_id", "lot_producing_ids", "move_raw_ids.product_id"]
+            )
             orders_raw = self._search_read(
-                "mrp.production", [],
+                "mrp.production", domain,
                 ["id", "name", "product_id", "product_qty", "date_start",
                  "lot_producing_ids",  # Odoo 19: Many2many (früher lot_producing_id)
                  "move_raw_ids"],
@@ -367,9 +411,9 @@ class OdooClient:
                 )
             }
 
-            # Erste Charge je Auftrag, alle Chargennamen auf einmal laden
-            lot_ids = [o["lot_producing_ids"][0] for o in orders_raw if o.get("lot_producing_ids")]
-            lots = {
+            # Alle Chargen aller Aufträge auf einmal laden
+            lot_ids = [i for o in orders_raw for i in o.get("lot_producing_ids", [])]
+            lot_names = {
                 lot["id"]: [lot["id"], lot.get("name", "")]
                 for lot in self._read("stock.lot", lot_ids, ["id", "name"])
             }
@@ -394,7 +438,7 @@ class OdooClient:
                     if i in moves and moves[i].get("product_id")
                 ]
 
-                first_lot_id = order["lot_producing_ids"][0] if order.get("lot_producing_ids") else None
+                order_lots = [lot_names[i] for i in order.get("lot_producing_ids", []) if i in lot_names]
 
                 orders.append(
                     ManufacturingOrder(
@@ -403,7 +447,8 @@ class OdooClient:
                         product_id=product_id,
                         quantity=order.get("product_qty", 0.0),
                         date_start=(order.get("date_start") or "")[:10],
-                        lot_producing_id=lots.get(first_lot_id, False),
+                        lots=order_lots,
+                        lot_producing_id=order_lots[0] if order_lots else False,
                         components=components,
                         **self._item_fields(products.get(product_id)),
                     )
@@ -418,10 +463,11 @@ class OdooClient:
 # ----------------------------------------------------------------------------
 # region Einkäufe
 # ----------------------------------------------------------------------------
-    def get_purchases(self, limit=20) -> list[PurchaseOrder]:
+    def get_purchases(self, limit=20, search: str = "") -> list[PurchaseOrder]:
         """
         Lädt Einkaufsbestellungen (purchase.order) mit Positionen und Rechnungen.
         Alle abhängigen Daten werden mit je einem Aufruf pro Modell geladen.
+        search: optionaler Suchtext, der direkt in Odoo gefiltert wird.
         """
         if not self.isConnected:
             raise Exception("Nicht verbunden mit Odoo.")
@@ -429,8 +475,12 @@ class OdooClient:
         try:
             self._product_cache.clear()
 
+            domain = self._build_search_domain(
+                "purchase.order", search,
+                ["name", "partner_id", "invoice_ids", "order_line.product_id"]
+            )
             orders_raw = self._search_read(
-                "purchase.order", [],
+                "purchase.order", domain,
                 ["id", "name", "date_order", "partner_id", "order_line",
                  "invoice_ids", "amount_total"],
                 limit=limit, order="date_order desc"

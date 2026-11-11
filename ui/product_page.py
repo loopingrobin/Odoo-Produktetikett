@@ -3,10 +3,23 @@ import os
 import re
 import tkinter as tk
 from tkinter import ttk, messagebox
-from PIL import ImageTk
+from PIL import Image, ImageTk
 import threading
 
+try:
+    import pymupdf  # für die Etiketten-Vorschau; ohne das Paket wird der QR-Code angezeigt
+except ImportError:
+    pymupdf = None
+
 from odoo_client import Invoice
+
+# Größte Anzeigegröße der Etiketten-Vorschau (Pixel)
+PREVIEW_MAX_WIDTH = 320
+PREVIEW_MAX_HEIGHT = 220
+# Wartezeit nach der letzten Eingabe, bevor die Vorschau neu erzeugt wird (ms)
+PREVIEW_DELAY_MS = 300
+# Höchstzahl der Kopien pro Druck
+MAX_COPIES = 99
 
 class LoadingPopup(tk.Toplevel):
     def __init__(self, parent, message="Lade Daten...", on_cancel=None):
@@ -86,6 +99,17 @@ class ProductPage(ttk.Frame):
         # Suchtext: filtert die geladenen Einträge während der Eingabe
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *args: self.write_overview_data())
+        # Optional: Suchtext zusätzlich direkt in Odoo suchen (findet auch ältere Einträge)
+        self.search_in_odoo_var = tk.BooleanVar(value=False)
+        self.server_search = ""  # Suchtext, mit dem die aktuellen Daten in Odoo gefiltert wurden
+
+        # Anzahl der Kopien beim Drucken und gewählte Charge (bei mehreren Chargen)
+        self.copies_var = tk.StringVar(value="1")
+        self.lot_var = tk.StringVar()
+
+        # Vorschau-Aktualisierung (verzögert, damit nicht bei jedem Tastendruck neu gerendert wird)
+        self._preview_job = None
+        self.preview_image = None
 
         # Eingabe Chargennummer bei fehlender Rechnung
         self.chargennr_var = tk.StringVar()
@@ -193,12 +217,19 @@ class ProductPage(ttk.Frame):
         self.search_entry = ttk.Entry(controls_frame, textvariable=self.search_var)
         self.search_entry.grid(row=3, column=0, columnspan=2, padx=5, sticky="ew")
         self.search_entry.bind("<Escape>", lambda e: self.search_var.set(""))
+        self.search_entry.bind("<Return>", self.on_search_enter)
 
         ttk.Button(
             controls_frame,
             text="Zurücksetzen",
             command=lambda: self.search_var.set("")
         ).grid(row=3, column=2, padx=10, sticky="w")
+
+        ttk.Checkbutton(
+            controls_frame,
+            text="Auch in Odoo suchen (Enter oder 'Daten laden') – findet ältere Einträge",
+            variable=self.search_in_odoo_var
+        ).grid(row=4, column=0, columnspan=3, sticky="w", padx=5, pady=(3, 0))
 
         # Optional: gleichmäßige Spaltenverteilung
         controls_frame.grid_columnconfigure(0, weight=1)
@@ -237,7 +268,7 @@ class ProductPage(ttk.Frame):
         self.tree_products = ttk.Treeview(right_frame, columns=("reference", "designation", "quantity"), show="headings", height=8)
 
         # Spaltenbreite
-        self.tree_products.column("reference", width=50, anchor="w", stretch=False)
+        self.tree_products.column("reference", width=90, anchor="w", stretch=False)
         self.tree_products.column("designation", width=200, anchor="w", stretch=True)
         self.tree_products.column("quantity", width=80, anchor="e", stretch=False)
 
@@ -256,13 +287,15 @@ class ProductPage(ttk.Frame):
         # Überschrift
         ttk.Label(preview_frame, text="Etikett-Vorschau").grid(row=0, column=0, sticky="w", padx=(0, 10))
 
-        # QR-Code rechts von der Überschrift
-        self.qr_label = ttk.Label(preview_frame)
+        # Bild rechts von der Überschrift: Vorschau des fertigen Etiketts
+        # (ohne pymupdf nur der QR-Code)
+        self.qr_label = ttk.Label(preview_frame, relief="solid", borderwidth=1)
         self.qr_label.grid(row=1, column=1, rowspan=2, padx=10, sticky="n")
 
-        # Etikett-Vorschau (Textfeld)
+        # Etikett-Vorschau (Textfeld); der Text dient zugleich als Bezeichnung auf dem Etikett
         self.name_preview = tk.Text(preview_frame, height=4, wrap="word")
         self.name_preview.grid(row=1, column=0, sticky="nsew", pady=(5, 0))
+        self.name_preview.bind("<KeyRelease>", self.schedule_preview_update)
         self.label_preview = tk.Text(preview_frame, height=8, wrap="word")
         self.label_preview.grid(row=2, column=0, sticky="nsew", pady=(5, 0))
 
@@ -289,6 +322,23 @@ class ProductPage(ttk.Frame):
         self.chargennr_entry.grid(row=1, column=1, sticky="w")
 
         self.hide_charge_field()
+
+        # Auswahl der Charge (nur sichtbar, wenn ein Fertigungsauftrag mehrere Chargen hat)
+        self.lot_label = ttk.Label(number_frame, text="Charge:")
+        self.lot_label.grid(row=0, column=1, sticky="w")
+        self.lot_select = ttk.Combobox(number_frame, textvariable=self.lot_var, state="readonly", width=22)
+        self.lot_select.grid(row=1, column=1, sticky="w")
+        self.lot_select.bind("<<ComboboxSelected>>", self.on_lot_selected)
+        self.hide_lot_select()
+
+        # Anzahl der Kopien
+        ttk.Label(number_frame, text="Kopien:").grid(row=0, column=2, sticky="w", padx=(10, 0))
+        self.copies_spinbox = ttk.Spinbox(number_frame, from_=1, to=MAX_COPIES, width=5, textvariable=self.copies_var)
+        self.copies_spinbox.grid(row=1, column=2, sticky="w", padx=(10, 0))
+
+        # Vorschau aktualisieren, wenn Stückzahl oder manuelle Chargennummer geändert werden
+        self.current_qty_var.trace_add("write", self.schedule_preview_update)
+        self.chargennr_var.trace_add("write", self.schedule_preview_update)
 
 
         # Druckerauswahl
@@ -347,11 +397,14 @@ class ProductPage(ttk.Frame):
         geladenen Daten zum anderen Etikett-Typ gehören. Neu laden mit 'Daten laden'.
         """
         self.overview_data = None
+        self.server_search = ""
         self.product = None
         self.component = None
         self.tree.delete(*self.tree.get_children())
         self.tree_products.delete(*self.tree_products.get_children())
         self.entries_tree.configure(text="0 Einträge")
+        self.hide_lot_select()
+        self.hide_charge_field()
 # ----------------------------------------------------------------------------
     def on_overview_selected(self, event):
         """
@@ -399,6 +452,7 @@ class ProductPage(ttk.Frame):
 
             # Prüfung, ob Feld für Chargennummer sichtbar sein muss.
             if mode == "Auftragsetikett":
+                self.hide_lot_select()
                 if self.product.invoices:
                     # Rechnung vorhanden → Eingabefeld ausblenden
                     self.hide_charge_field()
@@ -408,6 +462,7 @@ class ProductPage(ttk.Frame):
             else:
                 # Andere Modi (z. B. Produktetikett)
                 self.hide_charge_field()
+                self.update_lot_select()
 
         except Exception as e:
             messagebox.showerror("Fehler", f"Produkte konnten nicht geladen werden:\n{str(e)}")
@@ -435,22 +490,33 @@ class ProductPage(ttk.Frame):
         except ValueError:
             limit = 20
 
+        # Mit gesetztem Haken wird der Suchtext direkt in Odoo gesucht.
+        search = self.search_var.get().strip() if self.search_in_odoo_var.get() else ""
+        if search:
+            message = "Suche in Odoo läuft..."
+
         loading_popup = LoadingPopup(self, message)
 
         def load():
             data, error = None, None
             try:
-                data = loader(limit=limit)
+                data = loader(limit=limit, search=search)
             except Exception as e:
                 error = e
-            self.after(0, lambda: self.on_data_loaded(loading_popup, data, error, error_context))
+            self.after(0, lambda: self.on_data_loaded(loading_popup, data, error, error_context, search))
 
         threading.Thread(target=load, daemon=True).start()
 # ----------------------------------------------------------------------------
-    def on_data_loaded(self, loading_popup, data, error, error_context):
+    def on_search_enter(self, event=None):
+        """Enter im Suchfeld: bei gesetztem Haken wird in Odoo gesucht, sonst gefiltert wird ohnehin sofort."""
+        if self.search_in_odoo_var.get():
+            self.load_overview_data()
+# ----------------------------------------------------------------------------
+    def on_data_loaded(self, loading_popup, data, error, error_context, search=""):
         """
         Wird im Hauptthread aufgerufen, wenn das Laden fertig ist.
         Wurde das Laden abgebrochen, werden die Daten verworfen.
+        search: Suchtext, mit dem die Daten in Odoo gefiltert wurden (leer = alle).
         """
         if loading_popup.cancelled:
             return
@@ -460,6 +526,7 @@ class ProductPage(ttk.Frame):
             messagebox.showerror("Fehler", f"{error_context} konnten nicht geladen werden:\n{error}")
             return
 
+        self.server_search = search
         self.overview_data = data
         self.product = None
         self.component = None
@@ -474,8 +541,8 @@ class ProductPage(ttk.Frame):
             parts += [invoice.name for invoice in item.invoices]
             parts += [f"{line.default_code or ''} {line.name}" for line in item.lines]
         else:
-            lot = item.lot_producing_id[1] if item.lot_producing_id else ""
-            parts = [item.manufacturing_name, item.default_code, item.name, lot, item.udi, item.date_start]
+            parts = [item.manufacturing_name, item.default_code, item.name, item.udi, item.date_start]
+            parts += [lot[1] for lot in item.lots]
             parts += [f"{comp.default_code or ''} {comp.name}" for comp in item.components]
         return " ".join(str(p) for p in parts if p).lower()
 # ----------------------------------------------------------------------------
@@ -498,15 +565,23 @@ class ProductPage(ttk.Frame):
             return
 
         mode = self.mode_var.get()
-        terms = self.search_var.get().lower().split()
+        search_text = self.search_var.get().strip()
+        # Wurde genau dieser Text bereits in Odoo gesucht, sind alle geladenen Einträge Treffer
+        # und müssen nicht noch einmal lokal gefiltert werden.
+        searched_in_odoo = bool(self.server_search) and search_text.lower() == self.server_search.lower()
+        terms = [] if searched_in_odoo else search_text.lower().split()
         visible = [
             (i, item) for i, item in enumerate(self.overview_data)
             if self.matches_search(item, mode, terms)
         ]
         total = len(self.overview_data)
-        self.entries_tree.configure(
-            text=f"{len(visible)} von {total} Einträgen" if terms else f"{total} Einträge"
-        )
+        if searched_in_odoo:
+            count_text = f"{total} Einträge (Suche in Odoo: \"{self.server_search}\")"
+        elif terms:
+            count_text = f"{len(visible)} von {total} Einträgen"
+        else:
+            count_text = f"{total} Einträge"
+        self.entries_tree.configure(text=count_text)
 
         # Auftragsetikett
         if mode == "Auftragsetikett":
@@ -559,6 +634,41 @@ class ProductPage(ttk.Frame):
         """
         self.chargennr_label.grid()
         self.chargennr_entry.grid()
+# ----------------------------------------------------------------------------
+    def hide_lot_select(self):
+        """ Versteckt die Chargenauswahl """
+        self.lot_label.grid_remove()
+        self.lot_select.grid_remove()
+# ----------------------------------------------------------------------------
+    def update_lot_select(self):
+        """
+        Füllt die Chargenauswahl mit den Chargen des gewählten Fertigungsauftrags.
+        Sie ist nur sichtbar, wenn es mehrere Chargen gibt.
+        """
+        lots = getattr(self.product, "lots", []) or []
+        if len(lots) > 1:
+            self.lot_select["values"] = [lot[1] for lot in lots]
+            current = self.product.lot_producing_id
+            self.lot_var.set(current[1] if current else lots[0][1])
+            self.lot_label.grid()
+            self.lot_select.grid()
+        else:
+            self.hide_lot_select()
+# ----------------------------------------------------------------------------
+    def on_lot_selected(self, event=None):
+        """Die gewählte Charge gilt für Vorschau, QR-Code, Dateiname und Druck."""
+        name = self.lot_var.get()
+        for lot in self.product.lots:
+            if lot[1] == name:
+                self.product.lot_producing_id = lot
+                break
+
+        # Eine vom Benutzer geänderte Bezeichnung soll beim Chargenwechsel erhalten bleiben.
+        edited_name = self.name_preview.get("1.0", "end-1c")
+        self.load_label_data()
+        self.name_preview.delete("1.0", tk.END)
+        self.name_preview.insert("1.0", edited_name)
+        self.update_pdf_preview()
 # ----------------------------------------------------------------------------
 # endregion
 # ----------------------------------------------------------------------------
@@ -644,8 +754,7 @@ class ProductPage(ttk.Frame):
         self.label_preview.delete("1.0", tk.END)
         self.label_preview.insert("1.0", preview)
 
-        # QR-Code vorbereiten.
-        img = None
+        # QR-Code vorbereiten (wird angezeigt, wenn keine PDF-Vorschau möglich ist).
         if self.product:
             if mode == "Produktetikett":
                 # QR-String für Produktetikett
@@ -670,8 +779,100 @@ class ProductPage(ttk.Frame):
             img = self.label_printer.generate_qr_pil(qr_string, 100)
 
             # Anzeige in Tkinter
-            self.qr_image = ImageTk.PhotoImage(img)
-            self.qr_label.configure(image=self.qr_image)
+            self.preview_image = ImageTk.PhotoImage(img)
+            self.qr_label.configure(image=self.preview_image)
+
+            # Vorschau des fertigen Etiketts ersetzt den QR-Code (wenn pymupdf vorhanden ist).
+            self.update_pdf_preview()
+# ----------------------------------------------------------------------------
+    def schedule_preview_update(self, *args):
+        """Aktualisiert die Etiketten-Vorschau kurz nach der letzten Eingabe."""
+        if self._preview_job is not None:
+            self.after_cancel(self._preview_job)
+        self._preview_job = self.after(PREVIEW_DELAY_MS, self.update_pdf_preview)
+# ----------------------------------------------------------------------------
+    def update_pdf_preview(self):
+        """
+        Zeigt das fertige Etikett (so, wie es gedruckt wird) als Bild an.
+        Ohne pymupdf oder bei unvollständigen Angaben bleibt der QR-Code sichtbar.
+        """
+        self._preview_job = None
+        if pymupdf is None or not self.winfo_exists() or not self.product:
+            return
+
+        try:
+            pdf_data, _ = self.build_label()
+            with pymupdf.open(stream=pdf_data, filetype="pdf") as doc:
+                page = doc[0]
+                zoom = min(PREVIEW_MAX_WIDTH / page.rect.width, PREVIEW_MAX_HEIGHT / page.rect.height)
+                pixmap = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+                image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
+        except Exception:
+            return  # unvollständige Angaben: die QR-Anzeige bleibt
+
+        self.preview_image = ImageTk.PhotoImage(image)
+        self.qr_label.configure(image=self.preview_image)
+# ----------------------------------------------------------------------------
+    def build_label(self) -> tuple[bytes, str]:
+        """
+        Erstellt das PDF für den gewählten Eintrag und die aktuellen Eingaben.
+        Rückgabe: (PDF-Bytes, vorgeschlagener Dateiname).
+        Wirft ValueError mit einem Hinweis für den Benutzer, wenn Angaben fehlen.
+        """
+        mode = self.mode_var.get()
+
+        if not self.product:
+            raise ValueError("Bitte zuerst einen Eintrag in der Gesamtübersicht auswählen!")
+        if mode == "Auftragsetikett" and not self.component:
+            raise ValueError("Bitte eine Position in der Produktübersicht auswählen!")
+
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+        current_qty = self.current_qty_var.get().strip()
+        edited_name = self.name_preview.get("1.0", "end-1c").strip()
+
+        # Auftragsetikett
+        if mode == "Auftragsetikett":
+            if self.product.invoices:
+                # FALL 1: Rechnung vorhanden → Chargennummer ohne "RG"
+                invoice = self.product.invoices[0]
+                chargenr = invoice.name.removeprefix("RG") if invoice.name else "NOCHARGE"
+            else:
+                # FALL 2: KEINE Rechnung → manuelle Eingabe
+                chargenr = self.chargennr_var.get().strip()
+                if not chargenr:
+                    raise ValueError("Bitte eine Chargennummer eingeben!")
+
+                # künstliche Invoice erzeugen (damit der alte Code weiterläuft)
+                invoice = Invoice(
+                    id=0,
+                    name=f"{chargenr}",
+                    date=None,
+                    total=0.0,
+                    state="manual"
+                )
+
+            default_code = getattr(self.component, "default_code", None) or "NODEFAULT"
+            file_name = self.sanitize_filename(f"{default_code}_{chargenr}_{timestamp}.pdf")
+
+            pdf_data = self.label_printer.create_order_label_pdf(
+                self.product, self.component, invoice, current_qty,
+                edited_name or getattr(self.component, "name", "Unbekannt")
+            )
+
+        # Produktetikett
+        else:
+            lot = getattr(self.product, "lot_producing_id", None)
+            lot = lot[1] if lot else "NOLOT"
+
+            default_code = getattr(self.product, "default_code", None) or "NODEFAULT"
+            file_name = self.sanitize_filename(f"{default_code}_{lot}_{timestamp}.pdf")
+
+            pdf_data = self.label_printer.create_product_label_pdf(
+                self.product, current_qty,
+                edited_name or getattr(self.product, "name", "Unbekannt")
+            )
+
+        return pdf_data, file_name
 # ----------------------------------------------------------------------------
     def print_label(self):
         """
@@ -686,14 +887,13 @@ class ProductPage(ttk.Frame):
             messagebox.showwarning("Kein Drucker", "Bitte einen Drucker auswählen!")
             return
 
-        # Auswahl des Modus wird geladen
-        mode = self.mode_var.get()
-
-        if not self.product:
-            messagebox.showwarning("Kein Eintrag", "Bitte zuerst einen Eintrag in der Gesamtübersicht auswählen!")
-            return
-        if mode == "Auftragsetikett" and not self.component:
-            messagebox.showwarning("Keine Position", "Bitte eine Position in der Produktübersicht auswählen!")
+        # Anzahl der Kopien prüfen
+        try:
+            copies = int(self.copies_var.get())
+        except ValueError:
+            copies = 0
+        if not 1 <= copies <= MAX_COPIES:
+            messagebox.showwarning("Kopien", f"Bitte eine Anzahl von 1 bis {MAX_COPIES} Kopien eingeben!")
             return
 
         if self.save_pdf_var.get() and not self.label_printer.file_path:
@@ -703,67 +903,25 @@ class ProductPage(ttk.Frame):
             )
             return
 
-        self.label_printer.printer_id = printer_id
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
-
-        current_qty = self.current_qty_var.get().strip()
-        edited_name = self.name_preview.get("1.0", "end-1c").strip()
-
+        # Etikett erstellen
         try:
-            # Auftragsetikett
-            if mode == "Auftragsetikett":
-                if self.product.invoices:
-                    # FALL 1: Rechnung vorhanden → Chargennummer ohne "RG"
-                    invoice = self.product.invoices[0]
-                    chargenr = invoice.name.removeprefix("RG") if invoice.name else "NOCHARGE"
-                else:
-                    # FALL 2: KEINE Rechnung → manuelle Eingabe
-                    chargenr = self.chargennr_var.get().strip()
-                    if not chargenr:
-                        messagebox.showinfo("Fehler", "Bitte eine Chargennummer eingeben!")
-                        return
-
-                    # künstliche Invoice erzeugen (damit der alte Code weiterläuft)
-                    invoice = Invoice(
-                        id=0,
-                        name=f"{chargenr}",
-                        date=None,
-                        total=0.0,
-                        state="manual"
-                    )
-
-                default_code = getattr(self.component, "default_code", None) or "NODEFAULT"
-                file_name = self.sanitize_filename(f"{default_code}_{chargenr}_{timestamp}.pdf")
-
-                pdf_data = self.label_printer.create_order_label_pdf(
-                    self.product, self.component, invoice, current_qty,
-                    edited_name or getattr(self.component, "name", "Unbekannt")
-                )
-
-            # Produktetikett
-            else:
-                lot = getattr(self.product, "lot_producing_id", None)
-                lot = lot[1] if lot else "NOLOT"
-
-                default_code = getattr(self.product, "default_code", None) or "NODEFAULT"
-                file_name = self.sanitize_filename(f"{default_code}_{lot}_{timestamp}.pdf")
-
-                pdf_data = self.label_printer.create_product_label_pdf(
-                    self.product, current_qty,
-                    edited_name or getattr(self.product, "name", "Unbekannt")
-                )
+            pdf_data, file_name = self.build_label()
+        except ValueError as e:
+            messagebox.showwarning("Hinweis", str(e))
+            return
         except Exception as e:
             messagebox.showerror("Fehler", f"Das Etikett konnte nicht erstellt werden:\n{e}")
             return
 
         # An den Drucker senden
+        self.label_printer.printer_id = printer_id
         try:
-            self.label_printer.send_pdf_to_printnode(pdf_data)
+            self.label_printer.send_pdf_to_printnode(pdf_data, copies=copies)
         except Exception as e:
             messagebox.showerror("Druck fehlgeschlagen", str(e))
             return
 
-        status = "✅ Etikett an den Drucker gesendet."
+        status = "✅ Etikett an den Drucker gesendet." if copies == 1 else f"✅ {copies} Etiketten an den Drucker gesendet."
 
         # Optional als PDF speichern
         if self.save_pdf_var.get():

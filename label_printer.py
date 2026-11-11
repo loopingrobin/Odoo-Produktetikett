@@ -491,9 +491,10 @@ class LabelPrinter:
         ]
 
 # ----------------------------------------------------------------------------
-    def send_pdf_to_printnode(self, pdf_bytes, title="Etikett"):
+    def send_pdf_to_printnode(self, pdf_bytes, title="Etikett", copies: int = 1):
         """
         Sendet ein PDF an PrintNode über die API.
+        copies: Anzahl der Kopien (ein einziger Druckauftrag mit 'qty').
         Wirft bei einem Fehler eine Exception mit verständlicher Meldung.
         """
         if not self.api_key:
@@ -510,6 +511,7 @@ class LabelPrinter:
                     "title": title,
                     "contentType": "pdf_base64",
                     "content": pdf_b64,
+                    "qty": copies,
                     "source": "Etikett-Druck per Python"
                 },
                 timeout=REQUEST_TIMEOUT

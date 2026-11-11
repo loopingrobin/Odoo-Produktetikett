@@ -1,3 +1,4 @@
+import re
 import tkinter as tk
 from tkinter import ttk
 from odoo_client import OdooClient
@@ -6,15 +7,25 @@ from settings_manager import SettingsManager
 from .product_page import ProductPage
 from .settings_page import SettingsPage
 
+# Fenstergröße (Pixel): Startgröße ohne gespeicherte Größe und kleinste erlaubte Größe
+DEFAULT_WIDTH, DEFAULT_HEIGHT = 1150, 800
+MIN_WIDTH, MIN_HEIGHT = 1000, 680
+# Platz für Taskleiste und Fensterrahmen, der von der Bildschirmhöhe abgezogen wird
+SCREEN_MARGIN = 80
+
 class EtikettApp(tk.Tk):
     def __init__(self, app_version=""):
         super().__init__()
 
         self.title("Etikettendrucker")
-        self.geometry("1000x630")
+        self.minsize(MIN_WIDTH, MIN_HEIGHT)
 
         self.app_version = app_version
         self.settings_manager = SettingsManager()
+
+        # Zuletzt verwendete Fenstergröße und -position wiederherstellen
+        self.restore_window()
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         # Odoo Initialisierung
         odoo_settings = self.settings_manager.get_odoo_settings()
@@ -48,12 +59,13 @@ class EtikettApp(tk.Tk):
         # Menü
         self.create_menu()
 
+        # Footer zuerst einbauen, damit er auch bei kleinem Fenster sichtbar bleibt
+        # (der Inhalt darunter wird dann beschnitten, nicht die Fußleiste).
+        self.create_footer()
+
         # Inhalt
         self.panel = ttk.Frame(self)
         self.panel.pack(fill="both", expand=True)
-
-        # Footer
-        self.create_footer()
 
         self.pages = {
             "Einstellungen": lambda parent: SettingsPage(
@@ -66,6 +78,48 @@ class EtikettApp(tk.Tk):
 
         self.current_page = None
         self.load_page("Produktseite")
+# ----------------------------------------------------------------------------
+    def restore_window(self):
+        """
+        Setzt die beim letzten Beenden gespeicherte Fenstergröße (und Position,
+        wenn sie sichtbar ist). Ungültige Werte oder zu große Fenster fallen auf
+        eine passende Größe für den aktuellen Bildschirm zurück.
+        """
+        screen_w, screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
+        max_w, max_h = screen_w, screen_h - SCREEN_MARGIN
+
+        settings = self.settings_manager.get_window_settings()
+        match = re.fullmatch(r"(\d+)x(\d+)(?:([+-]\d+)([+-]\d+))?", settings.get("geometry") or "")
+
+        width, height, position = DEFAULT_WIDTH, DEFAULT_HEIGHT, ""
+        if match:
+            width, height = int(match.group(1)), int(match.group(2))
+            if match.group(3) is not None:
+                x, y = int(match.group(3)), int(match.group(4))
+                # Position nur übernehmen, wenn das Fenster noch erreichbar ist
+                # (z. B. nicht auf einem inzwischen getrennten Monitor).
+                if -width + 100 <= x <= screen_w - 100 and 0 <= y <= screen_h - 100:
+                    position = f"{x:+d}{y:+d}"
+
+        width = max(MIN_WIDTH, min(width, max_w))
+        height = max(MIN_HEIGHT, min(height, max_h))
+        self.geometry(f"{width}x{height}{position}")
+
+        if settings.get("maximized"):
+            self.state("zoomed")
+# ----------------------------------------------------------------------------
+    def on_close(self):
+        """Speichert Fenstergröße und -position, dann wird das Programm beendet."""
+        try:
+            maximized = self.state() == "zoomed"
+            if maximized:
+                # Die normale Größe merken, damit sie nach dem Verkleinern stimmt.
+                self.state("normal")
+                self.update_idletasks()
+            self.settings_manager.update_window_settings(self.geometry(), maximized)
+        except Exception as e:
+            print(f"⚠️ Fenstergröße konnte nicht gespeichert werden: {e}")
+        self.destroy()
 # ----------------------------------------------------------------------------
     def create_menu(self):
         menubar = tk.Menu(self)

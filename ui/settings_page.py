@@ -135,7 +135,14 @@ class SettingsPage(ttk.Frame):
         # Speichern-Button
         # ---------------------------------------------------------
         save_frame = ttk.Frame(container)
-        save_frame.grid(row=3, column=0, columnspan=2, pady=20)
+        save_frame.grid(row=3, column=0, columnspan=2, pady=(20, 5))
+
+        # Hinweis, wo die Zugangsdaten (API-Keys) liegen
+        if self.settings_manager.secure_storage:
+            security_text = "🔒 API-Keys werden im Windows-Anmeldeinformationsspeicher abgelegt (nicht in der config.json)."
+        else:
+            security_text = "⚠️ Kein Anmeldeinformationsspeicher verfügbar: API-Keys stehen im Klartext in der config.json."
+        ttk.Label(container, text=security_text, foreground="gray").grid(row=4, column=0, columnspan=2)
 
         save_button = ttk.Button(
             save_frame,
