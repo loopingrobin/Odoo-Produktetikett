@@ -1,4 +1,4 @@
-requests
-reportlab
-qrcode[pil]
-pillow
+requests>=2.32,<3
+reportlab>=4.2,<6
+qrcode[pil]>=8,<9
+pillow>=11,<14

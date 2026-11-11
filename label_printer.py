@@ -1,6 +1,8 @@
 # label_printer.py
 from datetime import datetime
 import io
+import os
+from xml.sax.saxutils import escape
 import requests
 import base64
 from reportlab.lib.units import mm
@@ -14,6 +16,18 @@ import qrcode
 from io import BytesIO
 from PIL import Image
 from odoo_client import Invoice, ManufacturingOrder, PurchaseOrder, PurchaseOrderLine
+
+# Bilder und Schrift liegen neben dem Programm, unabhängig vom Arbeitsverzeichnis.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PRINTNODE_URL = "https://api.printnode.com"
+# Timeout in Sekunden: (Verbindungsaufbau, Antwort)
+REQUEST_TIMEOUT = (5, 30)
+# Maße, auf die das Etikett-Layout entworfen ist (Koordinaten im Code in mm)
+DESIGN_WIDTH_MM = 100
+DESIGN_HEIGHT_MM = 50
+
+def _asset(*parts: str) -> str:
+    return os.path.join(BASE_DIR, *parts)
 
 class LabelPrinter:
 # ----------------------------------------------------------------------------
@@ -29,19 +43,19 @@ class LabelPrinter:
         # PDF-Pfad aus den Settings laden
         self.load_settings()
             
-        self.logo = ImageReader("label_pictures\\Logo_CHW.png")
-        self.ref_image = ImageReader("label_pictures\\REF.png")
-        self.udi_image = ImageReader("label_pictures\\UDI.png")
-        self.lot_image = ImageReader("label_pictures\\LOT.png")
-        self.sn_image = ImageReader("label_pictures\\SN.png")
-        self.md_image = ImageReader("label_pictures\\MD.png")
-        self.instruction_image = ImageReader("label_pictures\\Instruction.png")
-        self.single_patient_image = ImageReader("label_pictures\\Single-patient.png")
-        self.ce_image = ImageReader("label_pictures\\CE.png")
-        self.production_date_image = ImageReader("label_pictures\\Firma.png")
+        self.logo = ImageReader(_asset("label_pictures", "Logo_CHW.png"))
+        self.ref_image = ImageReader(_asset("label_pictures", "REF.png"))
+        self.udi_image = ImageReader(_asset("label_pictures", "UDI.png"))
+        self.lot_image = ImageReader(_asset("label_pictures", "LOT.png"))
+        self.sn_image = ImageReader(_asset("label_pictures", "SN.png"))
+        self.md_image = ImageReader(_asset("label_pictures", "MD.png"))
+        self.instruction_image = ImageReader(_asset("label_pictures", "Instruction.png"))
+        self.single_patient_image = ImageReader(_asset("label_pictures", "Single-patient.png"))
+        self.ce_image = ImageReader(_asset("label_pictures", "CE.png"))
+        self.production_date_image = ImageReader(_asset("label_pictures", "Firma.png"))
 
         # Vordefinierte Styles
-        pdfmetrics.registerFont(TTFont('Titillium', 'fonts/titilliumtext25l.ttf'))
+        pdfmetrics.registerFont(TTFont('Titillium', _asset("fonts", "titilliumtext25l.ttf")))
         self.styles = {
             "header": ParagraphStyle(
                 name="Header",
@@ -61,79 +75,79 @@ class LabelPrinter:
 
         if self.api_key != "":
             success, message = self.connect()
-            if success:
-                self.isConnected = True
-            else:
+            self.isConnected = success
+            if not success:
                 print("❌ Drucker-Verbindung fehlgeschlagen:", message)
 # ----------------------------------------------------------------------------
 # endregion
 # ----------------------------------------------------------------------------
 # region Initialisierung
 # ----------------------------------------------------------------------------
-    def connect(self):
+    def connect(self) -> tuple[bool, str]:
+        """
+        Prüft den API-Key bei PrintNode.
+        Rückgabe: (Erfolg, Meldung). Setzt zusätzlich isConnected.
+        """
+        self.isConnected = False
+        if not self.api_key:
+            return False, "Kein API-Key angegeben."
         try:
             response = requests.get(
-                "https://api.printnode.com/printers",
-                auth=(self.api_key, '')
+                f"{PRINTNODE_URL}/printers",
+                auth=(self.api_key, ''),
+                timeout=REQUEST_TIMEOUT
             )
-            if response.status_code == 200:
-                return True, "Verbindung erfolgreich"
-            elif response.status_code == 403:
-                return False, "Zugriff verweigert: API-Key ungültig"
-            else:
-                return False, f"Fehler: Status {response.status_code}"
         except requests.exceptions.RequestException as e:
             return False, f"Verbindungsfehler: {e}"
+
+        if response.status_code == 200:
+            self.isConnected = True
+            return True, "Verbindung erfolgreich"
+        if response.status_code in (401, 403):
+            return False, "Zugriff verweigert: API-Key ungültig"
+        return False, f"Fehler: Status {response.status_code}"
 # ----------------------------------------------------------------------------
     def load_settings(self):
         if self.settings_manager:
             label_settings = self.settings_manager.get_label_settings()
             self.file_path: str = label_settings.get("pdf_path", "")
             self.address_lines = label_settings.get("address_lines", ["", "", "", "", ""])
+            self.label_width_mm = self._valid_size(label_settings.get("width_mm"), DESIGN_WIDTH_MM)
+            self.label_height_mm = self._valid_size(label_settings.get("height_mm"), DESIGN_HEIGHT_MM)
         else:
             self.file_path = ""
             self.address_lines = ["", "", "", "", ""]
+            self.label_width_mm = DESIGN_WIDTH_MM
+            self.label_height_mm = DESIGN_HEIGHT_MM
 # ----------------------------------------------------------------------------
-# endregion
+    @staticmethod
+    def _valid_size(value, default: float) -> float:
+        """Etikettengröße aus den Einstellungen; bei ungültigem Wert das Standardmaß."""
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return default
+        return value if value > 0 else default
 # ----------------------------------------------------------------------------
-# region ZPL
-# ----------------------------------------------------------------------------
-    def create_zpl(self, product):
-        return f"""
-^XA
-^PW800                          ; Etikettbreite (100 mm bei 203 dpi)
-^LL400                          ; Etiketthöhe (50 mm bei 203 dpi)
+    def _new_canvas(self, buffer) -> canvas.Canvas:
+        """
+        Legt ein PDF in der eingestellten Etikettengröße an. Das Layout ist auf
+        100 x 50 mm entworfen und wird proportional skaliert und zentriert,
+        sodass der Inhalt auf jedes Format passt.
+        """
+        width, height = self.label_width_mm * mm, self.label_height_mm * mm
+        c = canvas.Canvas(buffer, pagesize=(width, height))
 
-^FO30,30
-^A0N,40,40
-^FDName: {product['name']}^FS
-
-^FO30,90
-^A0N,40,40
-^FDPrice: ${product['list_price']}^FS
-
-^FO30,160
-^BY2
-^BCN,100,Y,N,N
-^FD{product['barcode']}^FS
-
-^XZ
-"""
+        scale = min(width / (DESIGN_WIDTH_MM * mm), height / (DESIGN_HEIGHT_MM * mm))
+        offset_x = (width - DESIGN_WIDTH_MM * mm * scale) / 2
+        offset_y = (height - DESIGN_HEIGHT_MM * mm * scale) / 2
+        c.translate(offset_x, offset_y)
+        c.scale(scale, scale)
+        return c
 # ----------------------------------------------------------------------------
 # endregion
 # ----------------------------------------------------------------------------
 # region PDF
-# ----------------------------------------------------------------------------
-    def create_pdf(self, file_name, product):
-        c = canvas.Canvas(self.file_path + file_name, pagesize=(100 * mm, 50 * mm))  # 100x50 mm
-
-        c.setFont("Helvetica", 12)
-        c.drawString(10 * mm, 40 * mm, f"Name: {product.product_name}")
-        c.drawString(10 * mm, 30 * mm, f"Price: ${product.price}")
-
-        # Optional: Barcode zeichnen (mit weiteren libs)
-
-        c.save()
 # ----------------------------------------------------------------------------
     def create_order_label_pdf(
         self, 
@@ -170,7 +184,7 @@ class LabelPrinter:
             Das fertige PDF-Dokument im Speicher.
         """
         buffer = io.BytesIO()
-        c = canvas.Canvas(buffer, pagesize=(100*mm, 50*mm))
+        c = self._new_canvas(buffer)
 
         # --- PDF Inhalt zeichnen ---
         # Y-Koordinate von oben nach unten
@@ -179,6 +193,8 @@ class LabelPrinter:
         # Logo links oben
         self.draw_logo(c, 4 * mm, 39 * mm)
         c.setFont("Titillium", 10)
+
+        user_quantity = str(user_quantity or "")
 
         # Chargennummer rechts neben Logo
         nummer = invoice.name.removeprefix("RG")
@@ -215,7 +231,7 @@ class LabelPrinter:
         c.drawString(5 * mm, y, quantity_sting)
 
         # QR-Code
-        qr_img = self.generate_qr_code(component.default_code + "-" + invoice.name)
+        qr_img = self.generate_qr_code(f"{component.default_code or ''}-{invoice.name}")
         c.drawImage(qr_img, 80 * mm, y - 6 * mm, width=18 * mm, height=18 * mm)
 
         # Lieferant nebeneinander
@@ -257,11 +273,12 @@ class LabelPrinter:
             Das fertige PDF-Dokument im Speicher.
         """
         buffer = io.BytesIO()
-        c = canvas.Canvas(buffer, pagesize=(100*mm, 50*mm))
+        c = self._new_canvas(buffer)
+        user_quantity = str(user_quantity or "")
 
         # --- PDF Inhalt zeichnen ---
         # Y-Koordinate von oben nach unten
-        y = 45 * mm  
+        y = 45 * mm
 
         # Logo links oben
         self.draw_logo(c, 91 * mm, 48 * mm, rotation=-90)
@@ -335,7 +352,7 @@ class LabelPrinter:
             x_symbol_row += 5 * mm
         c.drawImage(self.production_date_image, x_symbol + x_symbol_row + 2 * mm, y + 1 * mm, width=8, height=8, preserveAspectRatio=True, mask='auto')
         c.setFont("Titillium", 5)
-        c.drawString(x_symbol + x_symbol_row, y - 0.5 * mm, datetime.strptime(product.date_start, "%Y-%m-%d").strftime("%Y/%m"))
+        c.drawString(x_symbol + x_symbol_row, y - 0.5 * mm, production_date)
         x_symbol_row += 8 * mm
 
         # Stückzahl
@@ -397,7 +414,8 @@ class LabelPrinter:
 # ----------------------------------------------------------------------------
     def draw_paragraph(self, c, text: str, x: float, y: float, w: float, h: float, style: str = "header"):
         """Hilfsmethode: zeichnet Text vertikal zentriert in eine Box."""
-        para = Paragraph(text, self.styles[style])
+        # Sonderzeichen wie & oder < würden sonst den Paragraph-Parser abbrechen lassen.
+        para = Paragraph(escape(str(text or "")), self.styles[style])
         w_used, h_used = para.wrap(w, h)
         para.drawOn(c, x, y + (h - h_used) / 2)
 # ----------------------------------------------------------------------------
@@ -455,8 +473,9 @@ class LabelPrinter:
             return []
 
         response = requests.get(
-            "https://api.printnode.com/printers",
-            auth=(self.api_key, '')
+            f"{PRINTNODE_URL}/printers",
+            auth=(self.api_key, ''),
+            timeout=REQUEST_TIMEOUT
         )
         response.raise_for_status()  # Fehler werfen, falls HTTP-Fehler
 
@@ -472,48 +491,36 @@ class LabelPrinter:
         ]
 
 # ----------------------------------------------------------------------------
-    def send_zpl_to_printnode(self, zpl_string):
-        """
-        Sendet ein ZPL an PrintNode über die API.
-        """
-        response = requests.post(
-            "https://api.printnode.com/printjobs",
-            auth=(self.api_key, ''),
-            json={
-                "printerId": self.printer_id,
-                "title": "Produktetikett",
-                "contentType": "raw_base64",
-                "content": zpl_string.encode("utf-8").decode("latin1").encode("base64").decode(),
-            }
-        )
-
-        if response.status_code != 201:
-            raise Exception(f"Druck fehlgeschlagen: {response.text}")
-                
-        return response.ok
-# ----------------------------------------------------------------------------
     def send_pdf_to_printnode(self, pdf_bytes, title="Etikett"):
         """
         Sendet ein PDF an PrintNode über die API.
+        Wirft bei einem Fehler eine Exception mit verständlicher Meldung.
         """
+        if not self.api_key:
+            raise Exception("Kein PrintNode-API-Key hinterlegt (siehe Einstellungen).")
+
         pdf_b64 = base64.b64encode(pdf_bytes).decode()
 
-        response = requests.post(
-            "https://api.printnode.com/printjobs",
-            auth=(self.api_key, ""),
-            json={
-                "printerId": self.printer_id,
-                "title": title,
-                "contentType": "pdf_base64",
-                "content": pdf_b64,
-                "source": "Etikett-Druck per Python"
-            }
-        )
+        try:
+            response = requests.post(
+                f"{PRINTNODE_URL}/printjobs",
+                auth=(self.api_key, ""),
+                json={
+                    "printerId": self.printer_id,
+                    "title": title,
+                    "contentType": "pdf_base64",
+                    "content": pdf_b64,
+                    "source": "Etikett-Druck per Python"
+                },
+                timeout=REQUEST_TIMEOUT
+            )
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Verbindung zu PrintNode fehlgeschlagen: {e}")
 
-        if response.status_code == 201:
-            print("✅ Etikett erfolgreich an den Drucker gesendet.")
-        else:
-            print("❌ Fehler beim Senden:", response.status_code, response.text)
+        if response.status_code != 201:
+            raise Exception(f"Druckauftrag abgelehnt (Status {response.status_code}): {response.text}")
+
+        print("✅ Etikett erfolgreich an den Drucker gesendet.")
 # ----------------------------------------------------------------------------
 # endregion
 # ----------------------------------------------------------------------------

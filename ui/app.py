@@ -19,9 +19,12 @@ class EtikettApp(tk.Tk):
         # Odoo Initialisierung
         odoo_settings = self.settings_manager.get_odoo_settings()
         
-        # Wenn alle Felder belegt → initialisieren
-        if all(odoo_settings.values()):
+        # URL, Datenbank und API-Key/Passwort müssen belegt sein (Benutzername nur für XML-RPC).
+        # OdooClient wirft beim Verbinden keine Fehler; bei Problemen bleibt isConnected False.
+        if all(odoo_settings.get(k) for k in ("url", "db", "password")):
             self.odoo_client = OdooClient(**odoo_settings)
+            if not self.odoo_client.isConnected:
+                print(f"⚠️ Odoo-Verbindung fehlgeschlagen: {self.odoo_client.last_error}")
         else:
             # Leere Version
             self.odoo_client = OdooClient()

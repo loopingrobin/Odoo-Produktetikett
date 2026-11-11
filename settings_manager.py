@@ -4,6 +4,12 @@ import os
 # Immer neben dem Programm speichern, unabhängig vom aktuellen Arbeitsverzeichnis.
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
+# Standard-Etikettenformat (Breite x Höhe in mm) und erlaubter Bereich
+DEFAULT_LABEL_WIDTH_MM = 100
+DEFAULT_LABEL_HEIGHT_MM = 50
+MIN_LABEL_SIZE_MM = 20
+MAX_LABEL_SIZE_MM = 300
+
 class SettingsManager:
     def __init__(self):
         self.config_file = CONFIG_FILE
@@ -23,7 +29,9 @@ class SettingsManager:
             },
             "label_settings": {
                 "pdf_path": "",
-                "address_lines": ["", "", "", "", ""]
+                "address_lines": ["", "", "", "", ""],
+                "width_mm": DEFAULT_LABEL_WIDTH_MM,
+                "height_mm": DEFAULT_LABEL_HEIGHT_MM
             }
         }
         self.load_settings()
@@ -92,9 +100,17 @@ class SettingsManager:
             "save_pdf": save_pdf
         })
 
-    def update_label_settings(self, pdf_path, address_lines):
+    def update_label_settings(self, pdf_path, address_lines,
+                              width_mm=DEFAULT_LABEL_WIDTH_MM, height_mm=DEFAULT_LABEL_HEIGHT_MM):
+        for name, value in (("Breite", width_mm), ("Höhe", height_mm)):
+            if not MIN_LABEL_SIZE_MM <= value <= MAX_LABEL_SIZE_MM:
+                raise ValueError(
+                    f"Etikett-{name} muss zwischen {MIN_LABEL_SIZE_MM} und {MAX_LABEL_SIZE_MM} mm liegen."
+                )
         self.save_settings("label_settings", {
             "pdf_path": pdf_path,
-            "address_lines": address_lines
+            "address_lines": address_lines,
+            "width_mm": width_mm,
+            "height_mm": height_mm
         })
 # ----------------------------------------------------------------------------  

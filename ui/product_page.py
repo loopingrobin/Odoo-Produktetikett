@@ -42,6 +42,8 @@ class LoadingPopup(tk.Toplevel):
         self.after(10, self.center_popup)
 
     def center_popup(self):
+        if not self.winfo_exists():  # schon wieder geschlossen (z. B. bei sehr schnellem Laden)
+            return
         width = self.winfo_width()
         height = self.winfo_height()
 
@@ -55,7 +57,11 @@ class LoadingPopup(tk.Toplevel):
         self.cancelled = True
         if self.on_cancel:
             self.on_cancel()
-        self.destroy()
+        self.close()
+# ----------------------------------------------------------------------------
+    def close(self):
+        if self.winfo_exists():
+            self.destroy()
 # ----------------------------------------------------------------------------
 
 class ProductPage(ttk.Frame):
@@ -76,6 +82,10 @@ class ProductPage(ttk.Frame):
         self.component = None
         self.mode_var = tk.StringVar(value="Produktetikett")
         self.limit_var = tk.StringVar(value=20)
+
+        # Suchtext: filtert die geladenen Einträge während der Eingabe
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *args: self.write_overview_data())
 
         # Eingabe Chargennummer bei fehlender Rechnung
         self.chargennr_var = tk.StringVar()
@@ -173,6 +183,22 @@ class ProductPage(ttk.Frame):
             command=self.load_overview_data
         )
         button.grid(row=1, column=2, padx=10, pady=(0, 5), sticky="w")
+
+        # Suchfeld
+        ttk.Label(
+            controls_frame,
+            text="Suche (Nummer, Rechnung, Lieferant, Artikel, Charge):"
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(5, 0))
+
+        self.search_entry = ttk.Entry(controls_frame, textvariable=self.search_var)
+        self.search_entry.grid(row=3, column=0, columnspan=2, padx=5, sticky="ew")
+        self.search_entry.bind("<Escape>", lambda e: self.search_var.set(""))
+
+        ttk.Button(
+            controls_frame,
+            text="Zurücksetzen",
+            command=lambda: self.search_var.set("")
+        ).grid(row=3, column=2, padx=10, sticky="w")
 
         # Optional: gleichmäßige Spaltenverteilung
         controls_frame.grid_columnconfigure(0, weight=1)
@@ -292,6 +318,10 @@ class ProductPage(ttk.Frame):
 
         # Button "Etiketten drucken".
         ttk.Button(printer_frame, text="Etikett drucken", command=self.print_label).grid(row=1, column=2)
+
+        # Rückmeldung nach dem Drucken
+        self.print_status = ttk.Label(printer_frame, text="")
+        self.print_status.grid(row=2, column=0, columnspan=3, sticky="w", pady=(5, 0))
 # ----------------------------------------------------------------------------
     def load_printers(self):
         try:
@@ -313,10 +343,15 @@ class ProductPage(ttk.Frame):
 # ----------------------------------------------------------------------------
     def on_mode_change(self, event=None):
         """
-        Bei Auswahländerung im Dropdown werden die Daten für das ausgewählte
-        Etikettenformat in das Treeview 'Gesamtübersicht' geladen.
+        Bei Auswahländerung im Dropdown wird die Übersicht geleert, weil die
+        geladenen Daten zum anderen Etikett-Typ gehören. Neu laden mit 'Daten laden'.
         """
-        # self.load_overview_data()
+        self.overview_data = None
+        self.product = None
+        self.component = None
+        self.tree.delete(*self.tree.get_children())
+        self.tree_products.delete(*self.tree_products.get_children())
+        self.entries_tree.configure(text="0 Einträge")
 # ----------------------------------------------------------------------------
     def on_overview_selected(self, event):
         """
@@ -380,48 +415,99 @@ class ProductPage(ttk.Frame):
     def load_overview_data(self):
         """
         Läd die Einträge aus der im Dropdown-Menü ausgewählten Datenbank.
+        Das Laden läuft im Hintergrund; die Oberfläche wird danach im Hauptthread
+        aktualisiert (Tkinter ist nicht thread-sicher).
         """
         mode = self.mode_var.get()
         if mode == "Auftragsetikett":
-            loading_popup = LoadingPopup(self, "Einkäufe werden geladen...", on_cancel=lambda: loading_popup.cancel)
+            message = "Einkäufe werden geladen..."
+            loader = self.odoo_client.get_purchases
+            error_context = "Einkaufsdaten"
         elif mode == "Produktetikett":
-            loading_popup = LoadingPopup(self, "Gefertigte Produkte werden geladen...", on_cancel=lambda: loading_popup.cancel)
+            message = "Gefertigte Produkte werden geladen..."
+            loader = self.odoo_client.get_manufacturing_orders
+            error_context = "Fertigungsdaten"
+        else:
+            return
+
+        try:
+            limit = int(self.limit_var.get())
+        except ValueError:
+            limit = 20
+
+        loading_popup = LoadingPopup(self, message)
 
         def load():
+            data, error = None, None
             try:
-                if mode == "Auftragsetikett":
-                    self.overview_data = self.odoo_client.get_purchases(limit=int(self.limit_var.get()))
-                elif mode == "Produktetikett":
-                    self.overview_data = self.odoo_client.get_manufacturing_orders(limit=int(self.limit_var.get()))
-
-                # GUI-Aktualisierung im Hauptthread
-                self.tree.after(0, lambda: self.write_overview_data())
-                if not loading_popup.cancelled:
-                    print("Laden abgeschlossen.")
-
-                # Anzahl Einträge wird nach dem laden dargestellt.
-                self.entries_tree.configure(text=f"{len(self.overview_data)} Einträge")
-
+                data = loader(limit=limit)
             except Exception as e:
-                error_context = "Fertigungsdaten" if mode == "Produktetikett" else "Einkaufsdaten"
-                self.tree.after(
-                    0,
-                    lambda err=e: messagebox.showerror("Fehler", f"{error_context} konnten nicht geladen werden:\n{err}")
-    )
-                
-            finally:
-                if not loading_popup.cancelled:
-                    loading_popup.destroy()
+                error = e
+            self.after(0, lambda: self.on_data_loaded(loading_popup, data, error, error_context))
 
         threading.Thread(target=load, daemon=True).start()
+# ----------------------------------------------------------------------------
+    def on_data_loaded(self, loading_popup, data, error, error_context):
+        """
+        Wird im Hauptthread aufgerufen, wenn das Laden fertig ist.
+        Wurde das Laden abgebrochen, werden die Daten verworfen.
+        """
+        if loading_popup.cancelled:
+            return
+        loading_popup.close()
+
+        if error is not None:
+            messagebox.showerror("Fehler", f"{error_context} konnten nicht geladen werden:\n{error}")
+            return
+
+        self.overview_data = data
+        self.product = None
+        self.component = None
+        self.tree_products.delete(*self.tree_products.get_children())
+        self.write_overview_data()
+# ----------------------------------------------------------------------------
+    @staticmethod
+    def build_search_text(item, mode) -> str:
+        """Alle durchsuchbaren Texte eines Eintrags (klein geschrieben, durch Leerzeichen getrennt)."""
+        if mode == "Auftragsetikett":
+            parts = [item.name, item.partner_name, item.date_order]
+            parts += [invoice.name for invoice in item.invoices]
+            parts += [f"{line.default_code or ''} {line.name}" for line in item.lines]
+        else:
+            lot = item.lot_producing_id[1] if item.lot_producing_id else ""
+            parts = [item.manufacturing_name, item.default_code, item.name, lot, item.udi, item.date_start]
+            parts += [f"{comp.default_code or ''} {comp.name}" for comp in item.components]
+        return " ".join(str(p) for p in parts if p).lower()
+# ----------------------------------------------------------------------------
+    def matches_search(self, item, mode, terms: list[str]) -> bool:
+        """Alle Suchbegriffe müssen vorkommen (UND), Groß-/Kleinschreibung egal."""
+        if not terms:
+            return True
+        text = self.build_search_text(item, mode)
+        return all(term in text for term in terms)
 # ----------------------------------------------------------------------------
     def write_overview_data(self):
         """
         Schreibt die geladenen Einträge in das Treeview 'Gesamtübersicht'.
+        Ist ein Suchtext eingegeben, werden nur passende Einträge angezeigt.
+        Die iid jeder Zeile bleibt der Index in self.overview_data.
         """
         self.tree.delete(*self.tree.get_children())  # vorherige Zeilen löschen
-        
+        if not self.overview_data:
+            self.entries_tree.configure(text="0 Einträge")
+            return
+
         mode = self.mode_var.get()
+        terms = self.search_var.get().lower().split()
+        visible = [
+            (i, item) for i, item in enumerate(self.overview_data)
+            if self.matches_search(item, mode, terms)
+        ]
+        total = len(self.overview_data)
+        self.entries_tree.configure(
+            text=f"{len(visible)} von {total} Einträgen" if terms else f"{total} Einträge"
+        )
+
         # Auftragsetikett
         if mode == "Auftragsetikett":
             # Überschriften im Treeview werden gesetzt.
@@ -430,7 +516,7 @@ class ProductPage(ttk.Frame):
             self.tree.heading('designation', text='Lieferant')
             self.tree.heading('total', text='Kosten')
 
-            for i, purchase in enumerate(self.overview_data):
+            for i, purchase in visible:
                 self.tree.insert(
                     "", "end", iid=i, 
                     values=(
@@ -449,7 +535,7 @@ class ProductPage(ttk.Frame):
             self.tree.heading('designation', text='Bezeichnung')
             self.tree.heading('total', text='Menge')
 
-            for i, component in enumerate(self.overview_data):
+            for i, component in visible:
                 self.tree.insert(
                     "", "end", iid=i, 
                     values=(
@@ -590,6 +676,7 @@ class ProductPage(ttk.Frame):
     def print_label(self):
         """
         Erstellt das Label und sendet es an den Drucker.
+        Fehler werden dem Benutzer angezeigt; gespeichert wird nur nach erfolgreichem Druck.
         """
         # Auswahl des Druckers wird geladen
         selected_name = self.printer_var.get()
@@ -598,104 +685,110 @@ class ProductPage(ttk.Frame):
         if not printer_id:
             messagebox.showwarning("Kein Drucker", "Bitte einen Drucker auswählen!")
             return
-        
-        self.label_printer.printer_id = printer_id
-        
+
         # Auswahl des Modus wird geladen
         mode = self.mode_var.get()
+
+        if not self.product:
+            messagebox.showwarning("Kein Eintrag", "Bitte zuerst einen Eintrag in der Gesamtübersicht auswählen!")
+            return
+        if mode == "Auftragsetikett" and not self.component:
+            messagebox.showwarning("Keine Position", "Bitte eine Position in der Produktübersicht auswählen!")
+            return
+
+        if self.save_pdf_var.get() and not self.label_printer.file_path:
+            messagebox.showwarning(
+                "Kein Speicherort",
+                "Für 'als PDF speichern' ist noch kein Speicherort festgelegt (siehe Einstellungen)."
+            )
+            return
+
+        self.label_printer.printer_id = printer_id
         timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
 
-        file_name = "test.pdf"
-        pdf_data = ""
+        current_qty = self.current_qty_var.get().strip()
+        edited_name = self.name_preview.get("1.0", "end-1c").strip()
 
-        # Auftragsetikett
-        if mode == "Auftragsetikett" and self.product:
-            
-            # ==========================
-            # FALL 1: Rechnung vorhanden
-            # ==========================
-            if self.product.invoices:
-                invoice = self.product.invoices[0]
+        try:
+            # Auftragsetikett
+            if mode == "Auftragsetikett":
+                if self.product.invoices:
+                    # FALL 1: Rechnung vorhanden → Chargennummer ohne "RG"
+                    invoice = self.product.invoices[0]
+                    chargenr = invoice.name.removeprefix("RG") if invoice.name else "NOCHARGE"
+                else:
+                    # FALL 2: KEINE Rechnung → manuelle Eingabe
+                    chargenr = self.chargennr_var.get().strip()
+                    if not chargenr:
+                        messagebox.showinfo("Fehler", "Bitte eine Chargennummer eingeben!")
+                        return
 
-                # Chargennummer ohne "RG"
-                chargenr = invoice.name.removeprefix("RG") if invoice.name else "NOCHARGE"
+                    # künstliche Invoice erzeugen (damit der alte Code weiterläuft)
+                    invoice = Invoice(
+                        id=0,
+                        name=f"{chargenr}",
+                        date=None,
+                        total=0.0,
+                        state="manual"
+                    )
 
-            # ==========================================
-            # FALL 2: KEINE Rechnung → manuelle Eingabe!
-            # ==========================================
-            else:   
-                # Benutzer-Eingabe lesen
-                chargenr = self.chargennr_var.get().strip()
+                default_code = getattr(self.component, "default_code", None) or "NODEFAULT"
+                file_name = self.sanitize_filename(f"{default_code}_{chargenr}_{timestamp}.pdf")
 
-                if not chargenr:
-                    messagebox.showinfo("Fehler", "Bitte eine Chargennummer eingeben!")
-                    return
+                pdf_data = self.label_printer.create_order_label_pdf(
+                    self.product, self.component, invoice, current_qty,
+                    edited_name or getattr(self.component, "name", "Unbekannt")
+                )
 
-                # künstliche Invoice erzeugen (damit der alte Code weiterläuft)
-                invoice = Invoice(
-                    id=0,
-                    name=f"{chargenr}",
-                    date=None,
-                    total=0.0,
-                    state="manual"
-                )   
-                
-            # ==========================
-            # Filename vorbereiten
-            # ==========================
-            # Default Code sauber machen (nur Buchstaben/Zahlen)
-            default_code = getattr(self.component, "default_code", "NODEFAULT")
+            # Produktetikett
+            else:
+                lot = getattr(self.product, "lot_producing_id", None)
+                lot = lot[1] if lot else "NOLOT"
 
-            file_name = self.sanitize_filename(f"{default_code}_{chargenr}_{timestamp}.pdf")
-            
-            # ==========================
-            # PDF bauen
-            # ==========================
-            current_qty = self.current_qty_var.get().strip()
-            edited_name = self.name_preview.get("1.0", "end-1c").strip()
-            if not edited_name:
-                edited_name = getattr(self.product, "name", "Unbekannt")
+                default_code = getattr(self.product, "default_code", None) or "NODEFAULT"
+                file_name = self.sanitize_filename(f"{default_code}_{lot}_{timestamp}.pdf")
 
-            pdf_data = self.label_printer.create_order_label_pdf(
-                self.product, self.component, invoice, current_qty, edited_name
-            )
-        
-        # Produktetikett
-        elif mode == "Produktetikett" and self.product:
-            lot = getattr(self.product, "lot_producing_id", None)
-            if isinstance(lot, list) and len(lot) > 1:
-                lot = lot[1]
-            lot = lot or "NOLOT"
+                pdf_data = self.label_printer.create_product_label_pdf(
+                    self.product, current_qty,
+                    edited_name or getattr(self.product, "name", "Unbekannt")
+                )
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Das Etikett konnte nicht erstellt werden:\n{e}")
+            return
 
-            default_code = getattr(self.product, "default_code", "NODEFAULT")
-            # default_code = re.sub(r"[^A-Za-z0-9_-]", "_", default_code)
+        # An den Drucker senden
+        try:
+            self.label_printer.send_pdf_to_printnode(pdf_data)
+        except Exception as e:
+            messagebox.showerror("Druck fehlgeschlagen", str(e))
+            return
 
-            file_name = self.sanitize_filename(f"{default_code}_{lot}_{timestamp}.pdf")
+        status = "✅ Etikett an den Drucker gesendet."
 
-            current_qty = self.current_qty_var.get().strip()
-            edited_name = self.name_preview.get("1.0", "end-1c").strip()
-            if not edited_name:
-                edited_name = getattr(self.product, "name", "Unbekannt")
-            pdf_data = self.label_printer.create_product_label_pdf(self.product, current_qty, edited_name)
-
-        self.label_printer.send_pdf_to_printnode(pdf_data)
-
-        # Optional speichern
+        # Optional als PDF speichern
         if self.save_pdf_var.get():
-            os.makedirs(self.label_printer.file_path, exist_ok=True)
-
-            file_path = os.path.join(self.label_printer.file_path, file_name)
-
-            with open(file_path, "wb") as pdf:
-                pdf.write(pdf_data)
-
-            print(f"Etikett gespeichert als: {file_path}")
+            try:
+                os.makedirs(self.label_printer.file_path, exist_ok=True)
+                file_path = os.path.join(self.label_printer.file_path, file_name)
+                with open(file_path, "wb") as pdf:
+                    pdf.write(pdf_data)
+                print(f"Etikett gespeichert als: {file_path}")
+            except OSError as e:
+                messagebox.showerror("PDF nicht gespeichert", f"Das Etikett wurde gedruckt, aber das PDF konnte nicht gespeichert werden:\n{e}")
+                status = "⚠️ Gedruckt, PDF aber nicht gespeichert."
 
         # Druckauswahl in den Settings speichern.
         self.settings_manager.update_printer_settings(
             printer_id,
             self.save_pdf_var.get()
         )
+
+        self.show_print_status(status)
+# ----------------------------------------------------------------------------
+    def show_print_status(self, text: str):
+        """Zeigt eine Rückmeldung neben dem Druckbutton und blendet sie nach 5 s aus."""
+        self.print_status.configure(text=text)
+        self.after(5000, lambda: self.print_status.configure(text=""))
 # ----------------------------------------------------------------------------
     def sanitize_filename(self, name: str) -> str:
         # Alles außer Buchstaben, Zahlen, Unterstrich und Bindestrich durch "_" ersetzen
